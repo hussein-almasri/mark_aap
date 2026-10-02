@@ -10,22 +10,6 @@ import 'screens/welcome_screen.dart';
 class AuthGate extends StatelessWidget {
   const AuthGate({super.key});
 
-  Future<UserModel?> _loadUser(User user) async {
-    final repository = UserRepository();
-
-    final userModel = await repository.getUserByUid(
-      uid: user.uid,
-    );
-
-    if (userModel != null) {
-      return userModel;
-    }
-
-    return repository.migrateLegacyUser(
-      uid: user.uid,
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<User?>(
@@ -45,8 +29,10 @@ class AuthGate extends StatelessWidget {
           return const WelcomeScreen();
         }
 
-        return FutureBuilder<UserModel?>(
-          future: _loadUser(user),
+        final repository = UserRepository();
+
+        return StreamBuilder<UserModel?>(
+          stream: repository.watchUserByUid(uid: user.uid),
           builder: (context, userSnapshot) {
             if (userSnapshot.connectionState ==
                 ConnectionState.waiting) {
@@ -66,30 +52,58 @@ class AuthGate extends StatelessWidget {
             final userModel = userSnapshot.data;
 
             if (userModel == null) {
-              return const _AccountProblemScreen(
-                message: 'تعذر تحميل بيانات الحساب. يرجى تسجيل الخروج والمحاولة مجددًا.',
+              return FutureBuilder<UserModel?>(
+                future: repository.migrateLegacyUser(uid: user.uid),
+                builder: (context, migrationSnapshot) {
+                  if (migrationSnapshot.connectionState ==
+                      ConnectionState.waiting) {
+                    return const Scaffold(
+                      body: Center(
+                        child: CircularProgressIndicator(),
+                      ),
+                    );
+                  }
+
+                  if (migrationSnapshot.hasError) {
+                    return const _AccountProblemScreen(
+                      message: 'تعذر تحميل بيانات الحساب.',
+                    );
+                  }
+
+                  return _buildUserDestination(migrationSnapshot.data);
+                },
               );
             }
 
-            if (!userModel.isActive) {
-              return const _AccountProblemScreen(
-                message: 'هذا الحساب غير نشط.',
-              );
-            }
-
-            if (userModel.isAdmin) {
-              return AdminDashboard(user: userModel);
-            }
-            if (userModel.isEmployee) {
-              return EmployeeDashboard(user: userModel);
-            }
-
-            return const _AccountProblemScreen(
-              message: 'دور الحساب غير معروف. يرجى التواصل مع المسؤول.',
-            );
+            return _buildUserDestination(userModel);
           },
         );
       },
+    );
+  }
+
+  Widget _buildUserDestination(UserModel? userModel) {
+    if (userModel == null) {
+      return const _AccountProblemScreen(
+        message: 'تعذر تحميل بيانات الحساب. يرجى تسجيل الخروج والمحاولة مجددًا.',
+      );
+    }
+
+    if (!userModel.isActive) {
+      return const _AccountProblemScreen(
+        message: 'هذا الحساب غير نشط.',
+      );
+    }
+
+    if (userModel.isAdmin) {
+      return AdminDashboard(user: userModel);
+    }
+    if (userModel.isEmployee) {
+      return EmployeeDashboard(user: userModel);
+    }
+
+    return const _AccountProblemScreen(
+      message: 'دور الحساب غير معروف. يرجى التواصل مع المسؤول.',
     );
   }
 }

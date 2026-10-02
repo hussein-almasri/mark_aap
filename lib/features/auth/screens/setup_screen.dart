@@ -52,9 +52,10 @@ class _SetupScreenState extends State<SetupScreen> {
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('تم إنشاء المتجر والحساب بنجاح'),
+          content: Text('تم إنشاء متجرك بنجاح 🎉'),
         ),
       );
+      Navigator.of(context).popUntil((route) => route.isFirst);
     } on Exception catch (e) {
       if (!mounted) return;
 

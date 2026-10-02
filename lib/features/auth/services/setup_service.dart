@@ -73,10 +73,6 @@ class SetupService {
       rethrow;
     }
 
-    // إنشاء الحساب في Firebase يعمل تسجيل دخول تلقائي.
-    // نسجل الخروج حتى ينتقل المستخدم إلى شاشة تسجيل الدخول.
-    await _firebaseAuth.signOut();
-
     return storeId;
   }
 }

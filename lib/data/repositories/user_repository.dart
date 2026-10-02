@@ -47,6 +47,23 @@ class UserRepository {
   }) async {
     final document = await _users.doc(uid).get();
 
+    return _userModelFromDocument(document, uid: uid);
+  }
+
+  Stream<UserModel?> watchUserByUid({
+    required String uid,
+  }) {
+    return _users
+        .doc(uid)
+        .snapshots()
+        .map((document) => _userModelFromDocument(document, uid: uid));
+  }
+
+  UserModel? _userModelFromDocument(
+    DocumentSnapshot<Map<String, dynamic>> document, {
+    required String uid,
+  }) {
+
     if (!document.exists) {
       return null;
     }
