@@ -20,13 +20,14 @@ class UserRepository {
         .collection('users');
   }
 
-  Future<void> createUserProfile({
+  void addUserProfilesToBatch({
+    required WriteBatch batch,
     required String storeId,
     required String uid,
     required String name,
     required String email,
     required String role,
-  }) async {
+  }) {
     final userData = {
       'storeId': storeId,
       'name': name.trim(),
@@ -37,9 +38,8 @@ class UserRepository {
       'updatedAt': FieldValue.serverTimestamp(),
     };
 
-    await _storeUsers(storeId).doc(uid).set(userData);
-
-    await _users.doc(uid).set(userData);
+    batch.set(_storeUsers(storeId).doc(uid), userData);
+    batch.set(_users.doc(uid), userData);
   }
 
   Future<UserModel?> getUserByUid({

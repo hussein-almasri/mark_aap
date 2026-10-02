@@ -40,6 +40,9 @@ Future<void> _login() async {
       email: _emailController.text,
       password: _passwordController.text,
     );
+    if (mounted) {
+      Navigator.of(context).popUntil((route) => route.isFirst);
+    }
   } on FirebaseAuthException catch (e) {
     if (!mounted) return;
 

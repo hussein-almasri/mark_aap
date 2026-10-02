@@ -1,4 +1,5 @@
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../../../data/repositories/store_repository.dart';
 import '../../../data/repositories/user_repository.dart';
@@ -6,13 +7,18 @@ import '../../../data/repositories/user_repository.dart';
 class SetupService {
   SetupService({
     FirebaseAuth? firebaseAuth,
+    FirebaseFirestore? firestore,
     StoreRepository? storeRepository,
     UserRepository? userRepository,
   })  : _firebaseAuth = firebaseAuth ?? FirebaseAuth.instance,
-        _storeRepository = storeRepository ?? StoreRepository(),
-        _userRepository = userRepository ?? UserRepository();
+        _firestore = firestore ?? FirebaseFirestore.instance,
+        _storeRepository = storeRepository ??
+            StoreRepository(firestore: firestore ?? FirebaseFirestore.instance),
+        _userRepository = userRepository ??
+            UserRepository(firestore: firestore ?? FirebaseFirestore.instance);
 
   final FirebaseAuth _firebaseAuth;
+  final FirebaseFirestore _firestore;
   final StoreRepository _storeRepository;
   final UserRepository _userRepository;
 
@@ -33,18 +39,39 @@ class SetupService {
       throw StateError('User account was not created.');
     }
 
-    final storeId = await _storeRepository.createStore(
+    final storeDocument = _storeRepository.newStoreReference();
+    final storeId = storeDocument.id;
+    final batch = _firestore.batch();
+
+    _storeRepository.addStoreToBatch(
+      batch: batch,
+      document: storeDocument,
       name: storeName,
       ownerName: ownerName,
+      ownerUid: user.uid,
     );
-
-    await _userRepository.createUserProfile(
+    _userRepository.addUserProfilesToBatch(
+      batch: batch,
       storeId: storeId,
       uid: user.uid,
       name: ownerName,
       email: email,
       role: 'ADMIN',
     );
+
+    try {
+      await batch.commit();
+    } catch (error) {
+      try {
+        await user.delete();
+      } catch (cleanupError) {
+        throw StateError(
+          'Store setup failed and the new authentication account could not '
+          'be cleaned up: $cleanupError',
+        );
+      }
+      rethrow;
+    }
 
     // إنشاء الحساب في Firebase يعمل تسجيل دخول تلقائي.
     // نسجل الخروج حتى ينتقل المستخدم إلى شاشة تسجيل الدخول.

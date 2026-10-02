@@ -3,8 +3,9 @@ import 'package:flutter/material.dart';
 
 import '../../data/models/user_model.dart';
 import '../../data/repositories/user_repository.dart';
-import 'screens/login_screen.dart';
-import 'screens/setup_screen.dart';
+import 'screens/admin_dashboard.dart';
+import 'screens/employee_dashboard.dart';
+import 'screens/welcome_screen.dart';
 
 class AuthGate extends StatelessWidget {
   const AuthGate({super.key});
@@ -41,7 +42,7 @@ class AuthGate extends StatelessWidget {
         final user = snapshot.data;
 
         if (user == null) {
-          return const LoginScreen();
+          return const WelcomeScreen();
         }
 
         return FutureBuilder<UserModel?>(
@@ -57,45 +58,66 @@ class AuthGate extends StatelessWidget {
             }
 
             if (userSnapshot.hasError) {
-              return const Scaffold(
-                body: Center(
-                  child: Text(
-                    'حدث خطأ أثناء تحميل بيانات الحساب',
-                  ),
-                ),
+              return const _AccountProblemScreen(
+                message: 'تعذر تحميل بيانات الحساب.',
               );
             }
 
             final userModel = userSnapshot.data;
 
             if (userModel == null) {
-              return const SetupScreen();
-            }
-
-            if (!userModel.isActive) {
-              return const Scaffold(
-                body: Center(
-                  child: Text(
-                    'هذا الحساب غير نشط',
-                  ),
-                ),
+              return const _AccountProblemScreen(
+                message: 'تعذر تحميل بيانات الحساب. يرجى تسجيل الخروج والمحاولة مجددًا.',
               );
             }
 
-            return Scaffold(
-              body: Center(
-                child: Text(
-                  'Dashboard\n'
-                  'المستخدم: ${userModel.name}\n'
-                  'الدور: ${userModel.role}\n'
-                  'المتجر: ${userModel.storeId}',
-                  textAlign: TextAlign.center,
-                ),
-              ),
+            if (!userModel.isActive) {
+              return const _AccountProblemScreen(
+                message: 'هذا الحساب غير نشط.',
+              );
+            }
+
+            if (userModel.isAdmin) {
+              return AdminDashboard(user: userModel);
+            }
+            if (userModel.isEmployee) {
+              return EmployeeDashboard(user: userModel);
+            }
+
+            return const _AccountProblemScreen(
+              message: 'دور الحساب غير معروف. يرجى التواصل مع المسؤول.',
             );
           },
         );
       },
+    );
+  }
+}
+
+class _AccountProblemScreen extends StatelessWidget {
+  const _AccountProblemScreen({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(message, textAlign: TextAlign.center),
+              const SizedBox(height: 16),
+              OutlinedButton(
+                onPressed: FirebaseAuth.instance.signOut,
+                child: const Text('تسجيل الخروج'),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

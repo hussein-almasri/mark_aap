@@ -11,20 +11,25 @@ class StoreRepository {
   CollectionReference<Map<String, dynamic>> get _stores =>
       _firestore.collection('stores');
 
-  Future<String> createStore({
+  DocumentReference<Map<String, dynamic>> newStoreReference() =>
+      _stores.doc();
+
+  void addStoreToBatch({
+    required WriteBatch batch,
+    required DocumentReference<Map<String, dynamic>> document,
     required String name,
     required String ownerName,
+    required String ownerUid,
     String? logoUrl,
-  }) async {
-    final document = await _stores.add({
+  }) {
+    batch.set(document, {
+      'ownerUid': ownerUid,
       'name': name.trim(),
       'ownerName': ownerName.trim(),
       'logoUrl': logoUrl,
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
     });
-
-    return document.id;
   }
 
   Future<StoreModel> getStore(String storeId) async {
