@@ -19,6 +19,7 @@ class UserRepository {
         .collection('users')
         .doc(uid)
         .set({
+      'storeId': storeId,
       'name': name.trim(),
       'email': email.trim(),
       'role': role,

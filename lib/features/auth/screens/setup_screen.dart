@@ -64,11 +64,11 @@ class _SetupScreenState extends State<SetupScreen> {
         ),
       );
     } finally {
-      if (!mounted) return;
-
-      setState(() {
+      if (mounted) {
+            setState(() {
         _isLoading = false;
       });
+      }
     }
   }
 
