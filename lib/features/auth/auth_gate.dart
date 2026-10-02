@@ -9,6 +9,22 @@ import 'screens/setup_screen.dart';
 class AuthGate extends StatelessWidget {
   const AuthGate({super.key});
 
+  Future<UserModel?> _loadUser(User user) async {
+    final repository = UserRepository();
+
+    final userModel = await repository.getUserByUid(
+      uid: user.uid,
+    );
+
+    if (userModel != null) {
+      return userModel;
+    }
+
+    return repository.migrateLegacyUser(
+      uid: user.uid,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<User?>(
@@ -29,9 +45,7 @@ class AuthGate extends StatelessWidget {
         }
 
         return FutureBuilder<UserModel?>(
-          future: UserRepository().getUserByUid(
-            uid: user.uid,
-          ),
+          future: _loadUser(user),
           builder: (context, userSnapshot) {
             if (userSnapshot.connectionState ==
                 ConnectionState.waiting) {

@@ -92,4 +92,50 @@ class UserRepository {
       isActive: data['isActive'] as bool? ?? false,
     );
   }
+  
+  Future<UserModel?> migrateLegacyUser({
+    required String uid,
+  }) async {
+    final storesSnapshot = await _firestore.collection('stores').get();
+
+    for (final storeDocument in storesSnapshot.docs) {
+      final userDocument = await storeDocument.reference
+          .collection('users')
+          .doc(uid)
+          .get();
+
+      if (!userDocument.exists) {
+        continue;
+      }
+
+      final data = userDocument.data();
+
+      if (data == null) {
+        return null;
+      }
+
+      final userModel = UserModel(
+        uid: uid,
+        storeId: data['storeId'] as String? ?? storeDocument.id,
+        name: data['name'] as String? ?? '',
+        email: data['email'] as String? ?? '',
+        role: data['role'] as String? ?? '',
+        isActive: data['isActive'] as bool? ?? false,
+      );
+
+      await _users.doc(uid).set({
+        'storeId': userModel.storeId,
+        'name': userModel.name,
+        'email': userModel.email,
+        'role': userModel.role,
+        'isActive': userModel.isActive,
+        'createdAt': data['createdAt'] ?? FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+
+      return userModel;
+    }
+
+    return null;
+  }
 }
