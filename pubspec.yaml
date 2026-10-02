@@ -38,6 +38,7 @@ dependencies:
   flutter_localizations:
     sdk: flutter
   firebase_auth: ^6.7.0
+  cloud_firestore: ^6.10.0
 
 dev_dependencies:
   flutter_test:
