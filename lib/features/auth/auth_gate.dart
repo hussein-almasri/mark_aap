@@ -1,6 +1,7 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../../data/models/user_model.dart';
 import '../../data/repositories/user_repository.dart';
 import 'screens/login_screen.dart';
 import 'screens/setup_screen.dart';
@@ -27,12 +28,12 @@ class AuthGate extends StatelessWidget {
           return const LoginScreen();
         }
 
-        return FutureBuilder<String?>(
-          future: UserRepository().getStoreIdForUser(
+        return FutureBuilder<UserModel?>(
+          future: UserRepository().getUserByUid(
             uid: user.uid,
           ),
-          builder: (context, storeSnapshot) {
-            if (storeSnapshot.connectionState ==
+          builder: (context, userSnapshot) {
+            if (userSnapshot.connectionState ==
                 ConnectionState.waiting) {
               return const Scaffold(
                 body: Center(
@@ -41,7 +42,7 @@ class AuthGate extends StatelessWidget {
               );
             }
 
-            if (storeSnapshot.hasError) {
+            if (userSnapshot.hasError) {
               return const Scaffold(
                 body: Center(
                   child: Text(
@@ -51,15 +52,31 @@ class AuthGate extends StatelessWidget {
               );
             }
 
-            final storeId = storeSnapshot.data;
+            final userModel = userSnapshot.data;
 
-            if (storeId == null) {
+            if (userModel == null) {
               return const SetupScreen();
             }
 
-            return const Scaffold(
+            if (!userModel.isActive) {
+              return const Scaffold(
+                body: Center(
+                  child: Text(
+                    'هذا الحساب غير نشط',
+                  ),
+                ),
+              );
+            }
+
+            return Scaffold(
               body: Center(
-                child: Text('Dashboard'),
+                child: Text(
+                  'Dashboard\n'
+                  'المستخدم: ${userModel.name}\n'
+                  'الدور: ${userModel.role}\n'
+                  'المتجر: ${userModel.storeId}',
+                  textAlign: TextAlign.center,
+                ),
               ),
             );
           },
