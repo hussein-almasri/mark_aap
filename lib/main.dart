@@ -4,7 +4,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'core/theme/app_theme.dart';
 import 'firebase_options.dart';
-
+import 'features/auth/auth_gate.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
@@ -39,17 +39,7 @@ class AdamApp extends StatelessWidget {
 
       theme: AppTheme.lightTheme,
 
-      home: const Scaffold(
-        body: Center(
-          child: Text(
-            'آدم',
-            style: TextStyle(
-              fontSize: 32,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-        ),
-      ),
+      home: const AuthGate(),
     );
   }
 }
