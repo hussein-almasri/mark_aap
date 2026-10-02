@@ -40,4 +40,24 @@ class UserRepository {
         .doc(uid)
         .get();
   }
+  Future<String?> getStoreIdForUser({
+    required String uid,
+  }) async {
+  final storesSnapshot = await _firestore.collection('stores').get();
+
+  for (final storeDocument in storesSnapshot.docs) {
+    final userDocument = await storeDocument.reference
+        .collection('users')
+        .doc(uid)
+        .get();
+
+    if (userDocument.exists) {
+      final data = userDocument.data();
+
+      return data?['storeId'] as String?;
+    }
+  }
+
+  return null;
+}
 }
