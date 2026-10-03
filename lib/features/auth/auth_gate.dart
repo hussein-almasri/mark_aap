@@ -17,9 +17,7 @@ class AuthGate extends StatelessWidget {
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Scaffold(
-            body: Center(
-              child: CircularProgressIndicator(),
-            ),
+            body: Center(child: CircularProgressIndicator()),
           );
         }
 
@@ -31,47 +29,31 @@ class AuthGate extends StatelessWidget {
 
         final repository = UserRepository();
 
-        return StreamBuilder<UserModel?>(
-          stream: repository.watchUserByUid(uid: user.uid),
+        return FutureBuilder<UserModel?>(
+          future: repository.getCurrentUserSession(uid: user.uid),
           builder: (context, userSnapshot) {
-            if (userSnapshot.connectionState ==
-                ConnectionState.waiting) {
+            if (userSnapshot.connectionState == ConnectionState.waiting) {
               return const Scaffold(
-                body: Center(
-                  child: CircularProgressIndicator(),
-                ),
+                body: Center(child: CircularProgressIndicator()),
               );
             }
 
             if (userSnapshot.hasError) {
+              if (userSnapshot.error is MultipleStoreMembershipsException) {
+                return const _AccountProblemScreen(
+                  message:
+                      'هذا الحساب مرتبط بأكثر من متجر، ولا يدعم التطبيق ذلك حاليًا.',
+                );
+              }
               return const _AccountProblemScreen(
                 message: 'تعذر تحميل بيانات الحساب.',
               );
             }
 
             final userModel = userSnapshot.data;
-
             if (userModel == null) {
-              return FutureBuilder<UserModel?>(
-                future: repository.migrateLegacyUser(uid: user.uid),
-                builder: (context, migrationSnapshot) {
-                  if (migrationSnapshot.connectionState ==
-                      ConnectionState.waiting) {
-                    return const Scaffold(
-                      body: Center(
-                        child: CircularProgressIndicator(),
-                      ),
-                    );
-                  }
-
-                  if (migrationSnapshot.hasError) {
-                    return const _AccountProblemScreen(
-                      message: 'تعذر تحميل بيانات الحساب.',
-                    );
-                  }
-
-                  return _buildUserDestination(migrationSnapshot.data);
-                },
+              return const _AccountProblemScreen(
+                message: 'لا توجد عضوية متجر صالحة لهذا الحساب.',
               );
             }
 
@@ -82,17 +64,9 @@ class AuthGate extends StatelessWidget {
     );
   }
 
-  Widget _buildUserDestination(UserModel? userModel) {
-    if (userModel == null) {
-      return const _AccountProblemScreen(
-        message: 'تعذر تحميل بيانات الحساب. يرجى تسجيل الخروج والمحاولة مجددًا.',
-      );
-    }
-
+  Widget _buildUserDestination(UserModel userModel) {
     if (!userModel.isActive) {
-      return const _AccountProblemScreen(
-        message: 'هذا الحساب غير نشط.',
-      );
+      return const _AccountProblemScreen(message: 'هذا الحساب غير نشط.');
     }
 
     if (userModel.isAdmin) {

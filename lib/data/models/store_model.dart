@@ -3,19 +3,15 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 class StoreModel {
   const StoreModel({
     required this.id,
-    this.ownerUid,
+    required this.ownerUid,
     required this.name,
-    required this.ownerName,
-    this.logoUrl,
     this.createdAt,
     this.updatedAt,
   });
 
   final String id;
-  final String? ownerUid;
+  final String ownerUid;
   final String name;
-  final String ownerName;
-  final String? logoUrl;
   final Timestamp? createdAt;
   final Timestamp? updatedAt;
 
@@ -30,10 +26,8 @@ class StoreModel {
 
     return StoreModel(
       id: document.id,
-      ownerUid: data['ownerUid'] as String?,
+      ownerUid: data['ownerUid'] as String? ?? '',
       name: data['name'] as String? ?? '',
-      ownerName: data['ownerName'] as String? ?? '',
-      logoUrl: data['logoUrl'] as String?,
       createdAt: data['createdAt'] as Timestamp?,
       updatedAt: data['updatedAt'] as Timestamp?,
     );
@@ -42,9 +36,7 @@ class StoreModel {
   Map<String, dynamic> toFirestore() {
     return {
       'name': name,
-      if (ownerUid != null) 'ownerUid': ownerUid,
-      'ownerName': ownerName,
-      'logoUrl': logoUrl,
+      'ownerUid': ownerUid,
       'createdAt': createdAt,
       'updatedAt': updatedAt,
     };

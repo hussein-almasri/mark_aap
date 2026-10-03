@@ -10,12 +10,14 @@ class SetupService {
     FirebaseFirestore? firestore,
     StoreRepository? storeRepository,
     UserRepository? userRepository,
-  })  : _firebaseAuth = firebaseAuth ?? FirebaseAuth.instance,
-        _firestore = firestore ?? FirebaseFirestore.instance,
-        _storeRepository = storeRepository ??
-            StoreRepository(firestore: firestore ?? FirebaseFirestore.instance),
-        _userRepository = userRepository ??
-            UserRepository(firestore: firestore ?? FirebaseFirestore.instance);
+  }) : _firebaseAuth = firebaseAuth ?? FirebaseAuth.instance,
+       _firestore = firestore ?? FirebaseFirestore.instance,
+       _storeRepository =
+           storeRepository ??
+           StoreRepository(firestore: firestore ?? FirebaseFirestore.instance),
+       _userRepository =
+           userRepository ??
+           UserRepository(firestore: firestore ?? FirebaseFirestore.instance);
 
   final FirebaseAuth _firebaseAuth;
   final FirebaseFirestore _firestore;
@@ -46,16 +48,15 @@ class SetupService {
     _storeRepository.addStoreToBatch(
       batch: batch,
       document: storeDocument,
-      name: storeName,
-      ownerName: ownerName,
+      name: storeName.trim(),
       ownerUid: user.uid,
     );
-    _userRepository.addUserProfilesToBatch(
+    _userRepository.addUserAndMembershipsToBatch(
       batch: batch,
       storeId: storeId,
       uid: user.uid,
-      name: ownerName,
-      email: email,
+      displayName: ownerName.trim(),
+      email: user.email ?? email.trim(),
       role: 'ADMIN',
     );
 
