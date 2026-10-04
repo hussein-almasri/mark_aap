@@ -512,11 +512,7 @@ service cloud.firestore {
       }
 
       match /priceHistory/{historyId} {
-        // Admin sees all history. Employees may read selling entries only.
-        allow get: if isAdmin(storeId)
-          || (isEmployee(storeId) && resource.data.priceType == 'SELLING');
-        allow list: if isAdmin(storeId)
-          || (isEmployee(storeId) && resource.data.priceType == 'SELLING');
+        allow get, list: if isAdmin(storeId);
         allow create: if isAdmin(storeId)
           && validPriceHistoryLink(storeId, historyId, request.resource.data);
         allow update, delete: if false;
