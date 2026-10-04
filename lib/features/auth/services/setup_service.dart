@@ -1,28 +1,16 @@
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-
-import '../../../data/repositories/store_repository.dart';
-import '../../../data/repositories/user_repository.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 
 class SetupService {
   SetupService({
     FirebaseAuth? firebaseAuth,
-    FirebaseFirestore? firestore,
-    StoreRepository? storeRepository,
-    UserRepository? userRepository,
+    FirebaseFunctions? functions,
   }) : _firebaseAuth = firebaseAuth ?? FirebaseAuth.instance,
-       _firestore = firestore ?? FirebaseFirestore.instance,
-       _storeRepository =
-           storeRepository ??
-           StoreRepository(firestore: firestore ?? FirebaseFirestore.instance),
-       _userRepository =
-           userRepository ??
-           UserRepository(firestore: firestore ?? FirebaseFirestore.instance);
+       _functions =
+           functions ?? FirebaseFunctions.instanceFor(region: 'me-central2');
 
   final FirebaseAuth _firebaseAuth;
-  final FirebaseFirestore _firestore;
-  final StoreRepository _storeRepository;
-  final UserRepository _userRepository;
+  final FirebaseFunctions _functions;
 
   Future<String> setupStore({
     required String storeName,
@@ -41,27 +29,16 @@ class SetupService {
       throw StateError('User account was not created.');
     }
 
-    final storeDocument = _storeRepository.newStoreReference();
-    final storeId = storeDocument.id;
-    final batch = _firestore.batch();
-
-    _storeRepository.addStoreToBatch(
-      batch: batch,
-      document: storeDocument,
-      name: storeName.trim(),
-      ownerUid: user.uid,
-    );
-    _userRepository.addUserAndMembershipsToBatch(
-      batch: batch,
-      storeId: storeId,
-      uid: user.uid,
-      displayName: ownerName.trim(),
-      email: user.email ?? email.trim(),
-      role: 'ADMIN',
-    );
-
     try {
-      await batch.commit();
+      final result = await _functions.httpsCallable('setupStore').call({
+        'storeName': storeName.trim(),
+        'ownerName': ownerName.trim(),
+      });
+      final data = result.data;
+      if (data is! Map || data['storeId'] is! String) {
+        throw StateError('Store setup returned an invalid response.');
+      }
+      return data['storeId'] as String;
     } catch (error) {
       try {
         await user.delete();
@@ -73,7 +50,5 @@ class SetupService {
       }
       rethrow;
     }
-
-    return storeId;
   }
 }
