@@ -59,11 +59,6 @@ service cloud.firestore {
       return /databases/$(database)/documents/stores/$(storeId)/productBarcodeKeys/$(productBarcodeKey(barcode));
     }
 
-    function isEmployee(storeId) {
-      return isStoreMember(storeId)
-        && get(storeUserPath(storeId, request.auth.uid)).data.role == 'EMPLOYEE';
-    }
-
     function hasOnlyKeys(data, keys) {
       return data.keys().hasAll(keys) && data.keys().hasOnly(keys);
     }
