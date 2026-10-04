@@ -3,94 +3,130 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // ---------- Common helpers ----------
+
     function isSignedIn() {
       return request.auth != null;
-    }
-
-    function storePath(storeId) {
-      return /databases/$(database)/documents/stores/$(storeId);
-    }
-
-    function storeUserPath(storeId, uid) {
-      return /databases/$(database)/documents/stores/$(storeId)/users/$(uid);
     }
 
     function userPath(uid) {
       return /databases/$(database)/documents/users/$(uid);
     }
 
-    function validSetupBatch(storeId, uid) {
-      let store = getAfter(storePath(storeId)).data;
-      let member = getAfter(storeUserPath(storeId, uid)).data;
-      let user = getAfter(userPath(uid)).data;
+    function membershipIndexPath(uid, storeId) {
+      return /databases/$(database)/documents/users/$(uid)/memberships/$(storeId);
+    }
 
-      return isSignedIn()
-        && request.auth.uid == uid
-        && !exists(storePath(storeId))
-        && !exists(storeUserPath(storeId, uid))
-        && !exists(userPath(uid))
-        && existsAfter(storePath(storeId))
-        && existsAfter(storeUserPath(storeId, uid))
-        && existsAfter(userPath(uid))
-        && store.ownerUid == uid
-        && store.ownerName == user.name
-        && member.storeId == storeId
-        && member.name == user.name
-        && member.email == user.email
-        && member.role == 'ADMIN'
-        && member.isActive == true
-        && user.storeId == storeId
-        && user.role == 'ADMIN'
-        && user.isActive == true;
+    function storeUserPath(storeId, uid) {
+      return /databases/$(database)/documents/stores/$(storeId)/users/$(uid);
     }
 
     function isStoreMember(storeId) {
-      let uid = request.auth.uid;
-      let user = get(userPath(uid)).data;
-      let member = get(storeUserPath(storeId, uid)).data;
-
       return isSignedIn()
-        && exists(userPath(uid))
-        && exists(storeUserPath(storeId, uid))
-        && user.storeId == storeId
-        && user.role in ['ADMIN', 'EMPLOYEE']
-        && user.isActive == true
-        && member.storeId == storeId
-        && member.role == user.role
-        && member.isActive == true;
+        && exists(userPath(request.auth.uid))
+        && exists(membershipIndexPath(request.auth.uid, storeId))
+        && exists(storeUserPath(storeId, request.auth.uid))
+        && get(membershipIndexPath(request.auth.uid, storeId)).data.storeId == storeId
+        && get(membershipIndexPath(request.auth.uid, storeId)).data.isActive == true
+        && get(storeUserPath(storeId, request.auth.uid)).data.uid == request.auth.uid
+        && get(storeUserPath(storeId, request.auth.uid)).data.isActive == true;
     }
 
-    match /stores/{storeId} {
-      allow get: if isStoreMember(storeId);
-      allow list: if false;
-      allow create: if validSetupBatch(storeId, request.auth.uid)
-        && request.resource.data == getAfter(storePath(storeId)).data;
-      allow update, delete: if false;
-
-      match /users/{uid} {
-        allow get, list: if isStoreMember(storeId);
-        allow create: if uid == request.auth.uid
-          && validSetupBatch(storeId, uid)
-          && request.resource.data == getAfter(storeUserPath(storeId, uid)).data;
-        allow update: if uid == request.auth.uid
-          && isStoreMember(storeId)
-          && request.resource.data.diff(resource.data)
-            .affectedKeys().hasOnly(['name', 'email', 'updatedAt']);
-        allow delete: if false;
-      }
+    function isAdmin(storeId) {
+      return isStoreMember(storeId)
+        && get(storeUserPath(storeId, request.auth.uid)).data.role == 'ADMIN';
     }
+
+    function isEmployee(storeId) {
+      return isStoreMember(storeId)
+        && get(storeUserPath(storeId, request.auth.uid)).data.role == 'EMPLOYEE';
+    }
+
+
+    // ---------- Global user ----------
 
     match /users/{uid} {
-      allow get: if isSignedIn() && request.auth.uid == uid;
+      // A user can read only their own account document.
+      allow get: if isSignedIn()
+        && request.auth.uid == uid;
+
       allow list: if false;
-      allow create: if uid == request.auth.uid
-        && validSetupBatch(request.resource.data.storeId, uid)
-        && request.resource.data == getAfter(userPath(uid)).data;
+
+      // Account creation is handled by Cloud Functions.
+      allow create: if false;
+
+      // Users may update only their own display information.
+      // Store role/status is NOT kept here.
       allow update: if isSignedIn()
         && request.auth.uid == uid
         && request.resource.data.diff(resource.data)
-          .affectedKeys().hasOnly(['name', 'email', 'updatedAt']);
+          .affectedKeys()
+          .hasOnly([
+            'displayName',
+            'email',
+            'updatedAt'
+          ]);
+
       allow delete: if false;
+
+
+      // ---------- Membership index ----------
+
+      match /memberships/{storeId} {
+        // The client may read its own membership index entry.
+        allow get: if isSignedIn()
+          && request.auth.uid == uid
+          && resource.data.storeId == storeId;
+
+        allow list: if false;
+
+        // Memberships are created/changed by trusted backend/admin flows.
+        allow create, update, delete: if false;
+      }
+    }
+
+
+    // ---------- Stores ----------
+
+    match /stores/{storeId} {
+      // Any active member may read the store itself.
+      allow get: if isStoreMember(storeId);
+
+      allow list: if false;
+
+      // Store creation is handled by Cloud Functions.
+      allow create: if false;
+
+      // Only Admin may update store data.
+      allow update: if isAdmin(storeId)
+        && request.resource.data.diff(resource.data)
+          .affectedKeys()
+          .hasOnly([
+            'name',
+            'updatedAt'
+          ]);
+
+      allow delete: if false;
+
+
+      // ---------- Store memberships ----------
+
+      match /users/{uid} {
+        // Members may read membership records.
+        allow get: if isStoreMember(storeId);
+
+        allow list: if false;
+
+        // Membership creation/status/role changes are trusted operations.
+        allow create, update, delete: if false;
+      }
+
+
+      // ---------- Future store collections ----------
+
+      match /{document=**} {
+        allow read, write: if false;
+      }
     }
   }
 }
