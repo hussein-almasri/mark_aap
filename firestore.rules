@@ -37,12 +37,6 @@ service cloud.firestore {
         && get(storeUserPath(storeId, request.auth.uid)).data.role == 'ADMIN';
     }
 
-    function isEmployee(storeId) {
-      return isStoreMember(storeId)
-        && get(storeUserPath(storeId, request.auth.uid)).data.role == 'EMPLOYEE';
-    }
-
-
     // ---------- Global user ----------
 
     match /users/{uid} {
@@ -78,7 +72,9 @@ service cloud.firestore {
           && request.auth.uid == uid
           && resource.data.storeId == storeId;
 
-        allow list: if false;
+        // The parent path limits this query to the signed-in user's index.
+        allow list: if isSignedIn()
+          && request.auth.uid == uid;
 
         // Memberships are created/changed by trusted backend/admin flows.
         allow create, update, delete: if false;
