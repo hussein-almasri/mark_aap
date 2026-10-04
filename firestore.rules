@@ -21,6 +21,64 @@ service cloud.firestore {
       return /databases/$(database)/documents/stores/$(storeId)/users/$(uid);
     }
 
+    function isValidInitialSetup(uid) {
+      let storeData = getAfter(/databases/$(database)/documents/stores/$(uid)).data;
+      let storeMembership = getAfter(storeUserPath(uid, uid)).data;
+      let userData = getAfter(userPath(uid)).data;
+      let membershipIndex = getAfter(membershipIndexPath(uid, uid)).data;
+
+      return isSignedIn()
+        && request.auth.uid == uid
+        // Each target must be new before this atomic setup batch.
+        && !exists(userPath(uid))
+        && !exists(/databases/$(database)/documents/stores/$(uid))
+        && !exists(storeUserPath(uid, uid))
+        && !exists(membershipIndexPath(uid, uid))
+        // All four deterministic documents must exist after the batch.
+        && existsAfter(/databases/$(database)/documents/stores/$(uid))
+        && existsAfter(storeUserPath(uid, uid))
+        && existsAfter(userPath(uid))
+        && existsAfter(membershipIndexPath(uid, uid))
+        && storeData.keys().hasAll(['name', 'ownerUid', 'createdAt', 'updatedAt'])
+        && storeData.keys().hasOnly(['name', 'ownerUid', 'createdAt', 'updatedAt'])
+        && storeData.name is string
+        && storeData.name.matches('.*\\S.*')
+        && storeData.name.size() <= 120
+        && storeData.ownerUid == request.auth.uid
+        && storeData.createdAt == request.time
+        && storeData.updatedAt == request.time
+        && storeMembership.keys().hasAll([
+          'uid', 'role', 'isActive', 'createdAt', 'updatedAt'
+        ])
+        && storeMembership.keys().hasOnly([
+          'uid', 'role', 'isActive', 'createdAt', 'updatedAt'
+        ])
+        && storeMembership.uid == request.auth.uid
+        && storeMembership.role == 'ADMIN'
+        && storeMembership.isActive == true
+        && storeMembership.createdAt == request.time
+        && storeMembership.updatedAt == request.time
+        && userData.keys().hasAll([
+          'uid', 'email', 'displayName', 'createdAt', 'updatedAt'
+        ])
+        && userData.keys().hasOnly([
+          'uid', 'email', 'displayName', 'createdAt', 'updatedAt'
+        ])
+        && userData.uid == request.auth.uid
+        && userData.email is string
+        && userData.email == request.auth.token.email
+        && userData.displayName is string
+        && userData.displayName.matches('.*\\S.*')
+        && userData.displayName.size() <= 120
+        && userData.createdAt == request.time
+        && userData.updatedAt == request.time
+        && membershipIndex.keys().hasAll(['storeId', 'role', 'isActive'])
+        && membershipIndex.keys().hasOnly(['storeId', 'role', 'isActive'])
+        && membershipIndex.storeId == request.auth.uid
+        && membershipIndex.role == 'ADMIN'
+        && membershipIndex.isActive == true;
+    }
+
     function isStoreMember(storeId) {
       return isSignedIn()
         && exists(userPath(request.auth.uid))
@@ -46,8 +104,10 @@ service cloud.firestore {
 
       allow list: if false;
 
-      // Account creation is handled by Cloud Functions.
-      allow create: if false;
+      // Temporary Spark setup uses the Auth UID as storeId so this rule can
+      // validate all four batch documents at deterministic paths. A future
+      // trusted Cloud Function may use independent store IDs.
+      allow create: if isValidInitialSetup(uid);
 
       // Users may update only their own display information.
       // Store role/status is NOT kept here.
@@ -76,8 +136,11 @@ service cloud.firestore {
         allow list: if isSignedIn()
           && request.auth.uid == uid;
 
-        // Memberships are created/changed by trusted backend/admin flows.
-        allow create, update, delete: if false;
+        // Initial setup is the only client creation path; future backend
+        // operations may manage memberships after moving off Spark.
+        allow create: if storeId == request.auth.uid
+          && isValidInitialSetup(uid);
+        allow update, delete: if false;
       }
     }
 
@@ -90,8 +153,10 @@ service cloud.firestore {
 
       allow list: if false;
 
-      // Store creation is handled by Cloud Functions.
-      allow create: if false;
+      // Temporary Spark setup uses the Auth UID as the store ID. A future
+      // trusted Cloud Function may generate an independent store ID.
+      allow create: if storeId == request.auth.uid
+        && isValidInitialSetup(storeId);
 
       // Only Admin may update store data.
       allow update: if isAdmin(storeId)
@@ -113,8 +178,11 @@ service cloud.firestore {
 
         allow list: if false;
 
-        // Membership creation/status/role changes are trusted operations.
-        allow create, update, delete: if false;
+        // Allow only the membership created together with initial setup.
+        allow create: if storeId == request.auth.uid
+          && uid == request.auth.uid
+          && isValidInitialSetup(uid);
+        allow update, delete: if false;
       }
 
 
