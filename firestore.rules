@@ -21,6 +21,23 @@ service cloud.firestore {
       return /databases/$(database)/documents/stores/$(storeId)/users/$(uid);
     }
 
+    function storePath(storeId) {
+      return /databases/$(database)/documents/stores/$(storeId);
+    }
+
+    function storeJoinCodePath(codeId) {
+      return /databases/$(database)/documents/storeJoinCodes/$(codeId);
+    }
+
+    function normalizedJoinCode(code) {
+      return code.replace('-', '').lower();
+    }
+
+    function validJoinCodeFormat(code) {
+      return code is string
+        && code.matches('^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{4}-[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{4}-[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{4}-[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{4}$');
+    }
+
     function productPath(storeId, productId) {
       return /databases/$(database)/documents/stores/$(storeId)/products/$(productId);
     }
@@ -208,6 +225,10 @@ service cloud.firestore {
       let storeMembership = getAfter(storeUserPath(uid, uid)).data;
       let userData = getAfter(userPath(uid)).data;
       let membershipIndex = getAfter(membershipIndexPath(uid, uid)).data;
+      let joinCode = storeData.joinCode is string ? storeData.joinCode : '';
+      let joinCodeClaim = getAfter(
+        storeJoinCodePath(normalizedJoinCode(joinCode))
+      ).data;
 
       return isSignedIn()
         && request.auth.uid == uid
@@ -221,12 +242,20 @@ service cloud.firestore {
         && existsAfter(storeUserPath(uid, uid))
         && existsAfter(userPath(uid))
         && existsAfter(membershipIndexPath(uid, uid))
-        && storeData.keys().hasAll(['name', 'ownerUid', 'createdAt', 'updatedAt'])
-        && storeData.keys().hasOnly(['name', 'ownerUid', 'createdAt', 'updatedAt'])
+        && storeData.keys().hasAll([
+          'name', 'ownerUid', 'joinCode', 'createdAt', 'updatedAt'
+        ])
+        && storeData.keys().hasOnly([
+          'name', 'ownerUid', 'joinCode', 'createdAt', 'updatedAt'
+        ])
         && storeData.name is string
         && storeData.name.matches('.*\\S.*')
         && storeData.name.size() <= 120
         && storeData.ownerUid == request.auth.uid
+        && validJoinCodeFormat(joinCode)
+        && hasOnlyKeys(joinCodeClaim, ['storeId', 'createdAt'])
+        && joinCodeClaim.storeId == uid
+        && joinCodeClaim.createdAt == request.time
         && storeData.createdAt == request.time
         && storeData.updatedAt == request.time
         && storeMembership.keys().hasAll([
@@ -261,6 +290,70 @@ service cloud.firestore {
         && membershipIndex.isActive == true;
     }
 
+    function validJoinCodeClaimCreate(codeId) {
+      let data = request.resource.data;
+      let storeId = data.storeId;
+      let storeAfter = getAfter(storePath(storeId)).data;
+      let code = storeAfter.joinCode is string ? storeAfter.joinCode : '';
+
+      return isSignedIn()
+        && codeId.matches('^[23456789abcdefghjklmnpqrstuvwxyz]{16}$')
+        && hasOnlyKeys(data, ['storeId', 'createdAt'])
+        && data.storeId is string
+        && data.createdAt == request.time
+        && storeAfter.ownerUid == request.auth.uid
+        && validJoinCodeFormat(code)
+        && normalizedJoinCode(code) == codeId
+        && ((!exists(storePath(storeId))
+            && storeId == request.auth.uid)
+          || (exists(storePath(storeId)) && isAdmin(storeId)));
+    }
+
+    function validJoinCodeClaimDelete(codeId) {
+      let storeId = resource.data.storeId;
+      let storeBefore = get(storePath(storeId)).data;
+      let storeAfter = getAfter(storePath(storeId)).data;
+      let newCode = storeAfter.joinCode is string ? storeAfter.joinCode : '';
+      let newClaim = getAfter(
+        storeJoinCodePath(normalizedJoinCode(newCode))
+      ).data;
+
+      return isAdmin(storeId)
+        && storeBefore.ownerUid == request.auth.uid
+        && validJoinCodeFormat(storeBefore.joinCode)
+        && normalizedJoinCode(storeBefore.joinCode) == codeId
+        && validJoinCodeFormat(newCode)
+        && normalizedJoinCode(newCode) != codeId
+        && hasOnlyKeys(newClaim, ['storeId', 'createdAt'])
+        && newClaim.storeId == storeId
+        && newClaim.createdAt == request.time;
+    }
+
+    function validStoreJoinCodeUpdate(storeId) {
+      let newCode = request.resource.data.joinCode is string
+        ? request.resource.data.joinCode
+        : '';
+      let newClaim = getAfter(
+        storeJoinCodePath(normalizedJoinCode(newCode))
+      ).data;
+      let oldCodeExists = resource.data.keys().hasAny(['joinCode']);
+      let oldCode = oldCodeExists && resource.data.joinCode is string
+        ? resource.data.joinCode
+        : '';
+
+      return resource.data.ownerUid == request.auth.uid
+        && request.resource.data.ownerUid == resource.data.ownerUid
+        && validJoinCodeFormat(newCode)
+        && (!oldCodeExists
+          || (validJoinCodeFormat(oldCode)
+            && normalizedJoinCode(oldCode) != normalizedJoinCode(newCode)
+            && !existsAfter(storeJoinCodePath(normalizedJoinCode(oldCode)))))
+        && hasOnlyKeys(newClaim, ['storeId', 'createdAt'])
+        && newClaim.storeId == storeId
+        && newClaim.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+    }
+
     function isStoreMember(storeId) {
       return isSignedIn()
         && exists(userPath(request.auth.uid))
@@ -275,6 +368,16 @@ service cloud.firestore {
     function isAdmin(storeId) {
       return isStoreMember(storeId)
         && get(storeUserPath(storeId, request.auth.uid)).data.role == 'ADMIN';
+    }
+
+    // Join-code claims are opaque lookup documents. Clients may check one
+    // exact code but cannot enumerate the collection or edit an existing claim.
+    match /storeJoinCodes/{codeId} {
+      allow get: if isSignedIn();
+      allow list: if false;
+      allow create: if validJoinCodeClaimCreate(codeId);
+      allow update: if false;
+      allow delete: if validJoinCodeClaimDelete(codeId);
     }
 
     // ---------- Global user ----------
@@ -346,8 +449,12 @@ service cloud.firestore {
           .affectedKeys()
           .hasOnly([
             'name',
-            'updatedAt'
-          ]);
+            'updatedAt',
+            'joinCode'
+          ])
+        && (!request.resource.data.diff(resource.data)
+            .affectedKeys().hasAny(['joinCode'])
+          || validStoreJoinCodeUpdate(storeId));
 
       allow delete: if false;
 

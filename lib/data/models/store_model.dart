@@ -5,6 +5,7 @@ class StoreModel {
     required this.id,
     required this.ownerUid,
     required this.name,
+    this.joinCode,
     this.createdAt,
     this.updatedAt,
   });
@@ -12,6 +13,7 @@ class StoreModel {
   final String id;
   final String ownerUid;
   final String name;
+  final String? joinCode;
   final Timestamp? createdAt;
   final Timestamp? updatedAt;
 
@@ -28,6 +30,7 @@ class StoreModel {
       id: document.id,
       ownerUid: data['ownerUid'] as String? ?? '',
       name: data['name'] as String? ?? '',
+      joinCode: data['joinCode'] as String?,
       createdAt: data['createdAt'] as Timestamp?,
       updatedAt: data['updatedAt'] as Timestamp?,
     );
@@ -37,6 +40,7 @@ class StoreModel {
     return {
       'name': name,
       'ownerUid': ownerUid,
+      if (joinCode != null) 'joinCode': joinCode,
       'createdAt': createdAt,
       'updatedAt': updatedAt,
     };

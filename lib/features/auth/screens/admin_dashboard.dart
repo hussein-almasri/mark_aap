@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../data/models/user_model.dart';
+import 'store_join_code_screen.dart';
 import '../../products/screens/product_list_screen.dart';
 
 class AdminDashboard extends StatelessWidget {
@@ -14,6 +15,19 @@ class AdminDashboard extends StatelessWidget {
     body: ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        Card(
+          child: ListTile(
+            leading: const CircleAvatar(child: Icon(Icons.key_rounded)),
+            title: const Text('كود انضمام الموظفين'),
+            subtitle: const Text('عرض الكود الحالي أو تغييره'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push<void>(
+              MaterialPageRoute(
+                builder: (_) => StoreJoinCodeScreen(user: user),
+              ),
+            ),
+          ),
+        ),
         Card(
           child: ListTile(
             leading: const CircleAvatar(
