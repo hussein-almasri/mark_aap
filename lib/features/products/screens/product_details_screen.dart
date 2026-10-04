@@ -23,48 +23,18 @@ class ProductDetailsScreen extends StatefulWidget {
 
 class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
   final _prices = ProductPriceRepository();
+  bool _priceOperationInProgress = false;
 
   Future<void> _changePrice({required bool selling}) async {
-    final controller = TextEditingController();
-    final amount = await showDialog<int>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(selling ? 'تغيير سعر البيع' : 'تغيير سعر الشراء'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          decoration: const InputDecoration(
-            labelText: 'المبلغ بالدينار الأردني',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('إلغاء'),
-          ),
-          FilledButton(
-            onPressed: () {
-              try {
-                final value = PriceAmount.parseJodToFils(controller.text);
-                if (selling && value == 0) return;
-                Navigator.pop(context, value);
-              } on FormatException {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('أدخل مبلغاً صحيحاً حتى ثلاثة منازل عشرية'),
-                  ),
-                );
-              }
-            },
-            child: const Text('حفظ'),
-          ),
-        ],
-      ),
-    );
-    controller.dispose();
-    if (amount == null || !mounted) return;
+    if (_priceOperationInProgress) return;
+    setState(() => _priceOperationInProgress = true);
     try {
+      final amount = await showDialog<int>(
+        context: context,
+        builder: (_) => _PriceEditDialog(selling: selling),
+      );
+      if (amount == null || !mounted) return;
+
       if (selling) {
         await _prices.changeSellingPrice(
           storeId: widget.user.storeId,
@@ -80,12 +50,15 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
           purchasePrice: amount,
         );
       }
-      if (mounted) setState(() {});
     } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('تعذر تغيير السعر: $error')));
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _priceOperationInProgress = false);
       }
     }
   }
@@ -182,7 +155,7 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
                   ? PriceAmount.formatJod(snapshot.data!.sellingPrice)
                   : '—',
             ),
-            onTap: widget.user.isAdmin
+            onTap: widget.user.isAdmin && !_priceOperationInProgress
                 ? () => _changePrice(selling: true)
                 : null,
           ),
@@ -201,7 +174,9 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
                     ? PriceAmount.formatJod(snapshot.data!.purchasePrice)
                     : '—',
               ),
-              onTap: () => _changePrice(selling: false),
+              onTap: _priceOperationInProgress
+                  ? null
+                  : () => _changePrice(selling: false),
             ),
           ),
           OutlinedButton.icon(
@@ -212,5 +187,62 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
         ],
       ],
     ),
+  );
+}
+
+class _PriceEditDialog extends StatefulWidget {
+  const _PriceEditDialog({required this.selling});
+
+  final bool selling;
+
+  @override
+  State<_PriceEditDialog> createState() => _PriceEditDialogState();
+}
+
+class _PriceEditDialogState extends State<_PriceEditDialog> {
+  final _controller = TextEditingController();
+  bool _completed = false;
+
+  void _cancel() {
+    if (_completed) return;
+    _completed = true;
+    Navigator.of(context).pop<int>();
+  }
+
+  void _save() {
+    if (_completed) return;
+    try {
+      final amount = PriceAmount.parseJodToFils(_controller.text);
+      if (widget.selling && amount == 0) return;
+      _completed = true;
+      Navigator.of(context).pop(amount);
+    } on FormatException {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('أدخل مبلغاً صحيحاً حتى ثلاثة منازل عشرية'),
+        ),
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: Text(widget.selling ? 'تغيير سعر البيع' : 'تغيير سعر الشراء'),
+    content: TextField(
+      controller: _controller,
+      autofocus: true,
+      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+      decoration: const InputDecoration(labelText: 'المبلغ بالدينار الأردني'),
+    ),
+    actions: [
+      TextButton(onPressed: _cancel, child: const Text('إلغاء')),
+      FilledButton(onPressed: _save, child: const Text('حفظ')),
+    ],
   );
 }
