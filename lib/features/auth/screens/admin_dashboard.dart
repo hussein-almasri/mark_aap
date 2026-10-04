@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../data/models/user_model.dart';
+import '../../products/screens/product_list_screen.dart';
 
 class AdminDashboard extends StatelessWidget {
   const AdminDashboard({required this.user, super.key});
@@ -8,23 +9,25 @@ class AdminDashboard extends StatelessWidget {
   final UserModel user;
 
   @override
-  Widget build(BuildContext context) => _PlaceholderDashboard(user: user);
-}
-
-class _PlaceholderDashboard extends StatelessWidget {
-  const _PlaceholderDashboard({required this.user});
-
-  final UserModel user;
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: Center(
-        child: Text(
-          'Dashboard\nالمستخدم: ${user.name}\nالدور: ${user.role}\nالمتجر: ${user.storeId}',
-          textAlign: TextAlign.center,
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('رَفّ | لوحة الإدارة')),
+    body: ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Card(
+          child: ListTile(
+            leading: const CircleAvatar(
+              child: Icon(Icons.inventory_2_outlined),
+            ),
+            title: const Text('المنتجات'),
+            subtitle: const Text('إدارة المنتجات والأسعار'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push<void>(
+              MaterialPageRoute(builder: (_) => ProductListScreen(user: user)),
+            ),
+          ),
         ),
-      ),
-    );
-  }
+      ],
+    ),
+  );
 }

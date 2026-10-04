@@ -21,6 +21,193 @@ service cloud.firestore {
       return /databases/$(database)/documents/stores/$(storeId)/users/$(uid);
     }
 
+    function productPath(storeId, productId) {
+      return /databases/$(database)/documents/stores/$(storeId)/products/$(productId);
+    }
+
+    function sellingPricePath(storeId, productId) {
+      return /databases/$(database)/documents/stores/$(storeId)/productSellingPrices/$(productId);
+    }
+
+    function productCostPath(storeId, productId) {
+      return /databases/$(database)/documents/stores/$(storeId)/productCosts/$(productId);
+    }
+
+    function priceHistoryPath(storeId, productId, priceType, revision) {
+      return /databases/$(database)/documents/stores/$(storeId)/priceHistory/$(productId + '_' + priceType + '_' + string(revision));
+    }
+
+    function normalizedProductName(name) {
+      return name.trim().lower();
+    }
+
+    function productNameKey(name) {
+      return 'n_' + normalizedProductName(name).toUtf8().toBase64()
+        .replace('/', '_').replace('[+]', '-').replace('=', '');
+    }
+
+    function productBarcodeKey(barcode) {
+      return 'b_' + barcode.trim().toUtf8().toBase64()
+        .replace('/', '_').replace('[+]', '-').replace('=', '');
+    }
+
+    function productNameKeyPath(storeId, name) {
+      return /databases/$(database)/documents/stores/$(storeId)/productNameKeys/$(productNameKey(name));
+    }
+
+    function productBarcodeKeyPath(storeId, barcode) {
+      return /databases/$(database)/documents/stores/$(storeId)/productBarcodeKeys/$(productBarcodeKey(barcode));
+    }
+
+    function isEmployee(storeId) {
+      return isStoreMember(storeId)
+        && get(storeUserPath(storeId, request.auth.uid)).data.role == 'EMPLOYEE';
+    }
+
+    function hasOnlyKeys(data, keys) {
+      return data.keys().hasAll(keys) && data.keys().hasOnly(keys);
+    }
+
+    function validHistoryData(data) {
+      return hasOnlyKeys(data, [
+          'productId', 'priceType', 'price', 'revision', 'createdBy', 'createdAt'
+        ])
+        && data.productId is string
+        && data.priceType in ['PURCHASE', 'SELLING']
+        && data.price is int
+        && data.revision is int
+        && data.revision > 0
+        && data.createdBy == request.auth.uid
+        && data.createdAt == request.time
+        && (data.priceType == 'PURCHASE'
+          ? data.price >= 0
+          : data.price > 0);
+    }
+
+    function validInitialProduct(storeId, productId) {
+      let data = request.resource.data;
+      let selling = getAfter(sellingPricePath(storeId, productId)).data;
+      let cost = getAfter(productCostPath(storeId, productId)).data;
+      let sellingHistory = getAfter(priceHistoryPath(
+        storeId, productId, 'SELLING', 1
+      )).data;
+      let purchaseHistory = getAfter(priceHistoryPath(
+        storeId, productId, 'PURCHASE', 1
+      )).data;
+      let nameClaim = getAfter(productNameKeyPath(storeId, data.name)).data;
+      let barcodeClaim = getAfter(productBarcodeKeyPath(storeId, data.barcode)).data;
+
+      return isAdmin(storeId)
+        && hasOnlyKeys(data, ['name', 'barcode', 'createdAt', 'updatedAt'])
+        && data.name is string
+        && data.name == data.name.trim()
+        && data.name.matches('.*\\S.*')
+        && data.name.size() <= 120
+        && data.barcode is string
+        && data.barcode != ''
+        && data.barcode == data.barcode.trim()
+        && data.barcode.size() <= 128
+        && data.createdAt == request.time
+        && data.updatedAt == request.time
+        && hasOnlyKeys(selling, ['sellingPrice', 'revision', 'updatedAt', 'updatedBy'])
+        && selling.sellingPrice is int
+        && selling.sellingPrice > 0
+        && selling.revision == 1
+        && selling.updatedAt == request.time
+        && selling.updatedBy == request.auth.uid
+        && hasOnlyKeys(cost, ['purchasePrice', 'revision', 'updatedAt', 'updatedBy'])
+        && cost.purchasePrice is int
+        && cost.purchasePrice >= 0
+        && cost.revision == 1
+        && cost.updatedAt == request.time
+        && cost.updatedBy == request.auth.uid
+        && validHistoryData(sellingHistory)
+        && sellingHistory.productId == productId
+        && sellingHistory.priceType == 'SELLING'
+        && sellingHistory.price == selling.sellingPrice
+        && sellingHistory.revision == 1
+        && validHistoryData(purchaseHistory)
+        && purchaseHistory.productId == productId
+        && purchaseHistory.priceType == 'PURCHASE'
+        && purchaseHistory.price == cost.purchasePrice
+        && purchaseHistory.revision == 1
+        && hasOnlyKeys(nameClaim, ['productId', 'normalizedName'])
+        && nameClaim.productId == productId
+        && nameClaim.normalizedName == normalizedProductName(data.name)
+        && hasOnlyKeys(barcodeClaim, ['productId', 'barcode'])
+        && barcodeClaim.productId == productId
+        && barcodeClaim.barcode == data.barcode;
+    }
+
+    function validNameClaimCreate(storeId, key) {
+      let productId = request.resource.data.productId;
+      let product = getAfter(productPath(storeId, productId)).data;
+
+      return isAdmin(storeId)
+        && hasOnlyKeys(request.resource.data, ['productId', 'normalizedName'])
+        && product.name is string
+        && key == productNameKey(product.name)
+        && request.resource.data.normalizedName == normalizedProductName(product.name);
+    }
+
+    function validBarcodeClaimCreate(storeId, key) {
+      let productId = request.resource.data.productId;
+      let product = getAfter(productPath(storeId, productId)).data;
+
+      return isAdmin(storeId)
+        && hasOnlyKeys(request.resource.data, ['productId', 'barcode'])
+        && product.barcode is string
+        && key == productBarcodeKey(product.barcode)
+        && request.resource.data.barcode == product.barcode;
+    }
+
+    function validProductNameClaimAfter(storeId, productId, oldName, newName) {
+      let newClaim = getAfter(productNameKeyPath(storeId, newName)).data;
+      return newClaim.productId == productId
+        && newClaim.normalizedName == normalizedProductName(newName)
+        && (productNameKey(oldName) == productNameKey(newName)
+          || !existsAfter(productNameKeyPath(storeId, oldName)));
+    }
+
+    function validProductBarcodeClaimAfter(storeId, productId, oldBarcode, newBarcode) {
+      let newClaim = getAfter(productBarcodeKeyPath(storeId, newBarcode)).data;
+      return newClaim.productId == productId
+        && newClaim.barcode == newBarcode
+        && (productBarcodeKey(oldBarcode) == productBarcodeKey(newBarcode)
+          || !existsAfter(productBarcodeKeyPath(storeId, oldBarcode)));
+    }
+
+    function validPriceHistoryLink(storeId, historyId, data) {
+      let product = getAfter(productPath(storeId, data.productId)).data;
+      let selling = getAfter(sellingPricePath(storeId, data.productId)).data;
+      let cost = getAfter(productCostPath(storeId, data.productId)).data;
+      let event = getAfter(priceHistoryPath(
+        storeId, data.productId, data.priceType, data.revision
+      )).data;
+
+      return validHistoryData(data)
+        && historyId == data.productId + '_' + data.priceType + '_' + string(data.revision)
+        && hasOnlyKeys(event, [
+          'productId', 'priceType', 'price', 'revision', 'createdBy', 'createdAt'
+        ])
+        && event.productId == data.productId
+        && event.priceType == data.priceType
+        && event.price == data.price
+        && event.revision == data.revision
+        && event.createdBy == request.auth.uid
+        && event.createdAt == request.time
+        && product.name is string
+        && (data.priceType == 'SELLING'
+          ? selling.sellingPrice == data.price
+            && selling.revision == data.revision
+            && selling.updatedAt == request.time
+            && selling.updatedBy == request.auth.uid
+          : cost.purchasePrice == data.price
+            && cost.revision == data.revision
+            && cost.updatedAt == request.time
+            && cost.updatedBy == request.auth.uid);
+    }
+
     function isValidInitialSetup(uid) {
       let storeData = getAfter(/databases/$(database)/documents/stores/$(uid)).data;
       let storeMembership = getAfter(storeUserPath(uid, uid)).data;
@@ -182,6 +369,156 @@ service cloud.firestore {
         allow create: if storeId == request.auth.uid
           && uid == request.auth.uid
           && isValidInitialSetup(uid);
+        allow update, delete: if false;
+      }
+
+      // ---------- Products ----------
+
+      match /products/{productId} {
+        allow get, list: if isStoreMember(storeId);
+
+        // Creation is valid only when the price, cost, both uniqueness claims,
+        // and both initial history records are written in this same batch.
+        allow create: if validInitialProduct(storeId, productId);
+
+        allow update: if isAdmin(storeId)
+          && request.resource.data.keys().hasAll(['name', 'barcode', 'createdAt', 'updatedAt'])
+          && request.resource.data.keys().hasOnly(['name', 'barcode', 'createdAt', 'updatedAt'])
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['name', 'barcode', 'updatedAt'])
+          && request.resource.data.name is string
+          && request.resource.data.name == request.resource.data.name.trim()
+          && request.resource.data.name.matches('.*\\S.*')
+          && request.resource.data.name.size() <= 120
+          && request.resource.data.barcode is string
+          && request.resource.data.barcode != ''
+          && request.resource.data.barcode == request.resource.data.barcode.trim()
+          && request.resource.data.barcode.size() <= 128
+          && request.resource.data.updatedAt == request.time
+          && validProductNameClaimAfter(
+            storeId, productId, resource.data.name, request.resource.data.name
+          )
+          && validProductBarcodeClaimAfter(
+            storeId, productId, resource.data.barcode, request.resource.data.barcode
+          );
+        allow delete: if false;
+      }
+
+      match /productNameKeys/{key} {
+        // Used by name-prefix search. Rules evaluate every returned claim.
+        allow get, list: if isStoreMember(storeId);
+        allow create: if validNameClaimCreate(storeId, key);
+        allow delete: if isAdmin(storeId)
+          && existsAfter(productPath(storeId, resource.data.productId))
+          && normalizedProductName(
+            getAfter(productPath(storeId, resource.data.productId)).data.name
+          ) != resource.data.normalizedName;
+        allow update: if false;
+      }
+
+      match /productBarcodeKeys/{key} {
+        allow get, list: if isAdmin(storeId);
+        allow create: if validBarcodeClaimCreate(storeId, key);
+        allow delete: if isAdmin(storeId)
+          && existsAfter(productPath(storeId, resource.data.productId))
+          && getAfter(productPath(storeId, resource.data.productId)).data.barcode
+            != resource.data.barcode;
+        allow update: if false;
+      }
+
+      match /productSellingPrices/{productId} {
+        allow get, list: if isStoreMember(storeId);
+
+        allow create: if isAdmin(storeId)
+          && hasOnlyKeys(request.resource.data, [
+            'sellingPrice', 'revision', 'updatedAt', 'updatedBy'
+          ])
+          && request.resource.data.sellingPrice is int
+          && request.resource.data.sellingPrice > 0
+          && request.resource.data.revision == 1
+          && request.resource.data.updatedAt == request.time
+          && request.resource.data.updatedBy == request.auth.uid
+          && getAfter(productPath(storeId, productId)).data.createdAt == request.time
+          && validPriceHistoryLink(storeId,
+            productId + '_SELLING_1', {
+              'productId': productId, 'priceType': 'SELLING',
+              'price': request.resource.data.sellingPrice, 'revision': 1,
+              'createdBy': request.auth.uid, 'createdAt': request.time
+            });
+
+        allow update: if isAdmin(storeId)
+          && hasOnlyKeys(request.resource.data, [
+            'sellingPrice', 'revision', 'updatedAt', 'updatedBy'
+          ])
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['sellingPrice', 'revision', 'updatedAt', 'updatedBy'])
+          && request.resource.data.sellingPrice is int
+          && request.resource.data.sellingPrice > 0
+          && request.resource.data.sellingPrice != resource.data.sellingPrice
+          && request.resource.data.revision == resource.data.revision + 1
+          && request.resource.data.updatedAt == request.time
+          && request.resource.data.updatedBy == request.auth.uid
+          && validPriceHistoryLink(storeId,
+            productId + '_SELLING_' + string(request.resource.data.revision), {
+              'productId': productId, 'priceType': 'SELLING',
+              'price': request.resource.data.sellingPrice,
+              'revision': request.resource.data.revision,
+              'createdBy': request.auth.uid, 'createdAt': request.time
+            });
+        allow delete: if false;
+      }
+
+      match /productCosts/{productId} {
+        // Purchase cost is private to Admin members.
+        allow get, list: if isAdmin(storeId);
+
+        allow create: if isAdmin(storeId)
+          && hasOnlyKeys(request.resource.data, [
+            'purchasePrice', 'revision', 'updatedAt', 'updatedBy'
+          ])
+          && request.resource.data.purchasePrice is int
+          && request.resource.data.purchasePrice >= 0
+          && request.resource.data.revision == 1
+          && request.resource.data.updatedAt == request.time
+          && request.resource.data.updatedBy == request.auth.uid
+          && getAfter(productPath(storeId, productId)).data.createdAt == request.time
+          && validPriceHistoryLink(storeId,
+            productId + '_PURCHASE_1', {
+              'productId': productId, 'priceType': 'PURCHASE',
+              'price': request.resource.data.purchasePrice, 'revision': 1,
+              'createdBy': request.auth.uid, 'createdAt': request.time
+            });
+
+        allow update: if isAdmin(storeId)
+          && hasOnlyKeys(request.resource.data, [
+            'purchasePrice', 'revision', 'updatedAt', 'updatedBy'
+          ])
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['purchasePrice', 'revision', 'updatedAt', 'updatedBy'])
+          && request.resource.data.purchasePrice is int
+          && request.resource.data.purchasePrice >= 0
+          && request.resource.data.purchasePrice != resource.data.purchasePrice
+          && request.resource.data.revision == resource.data.revision + 1
+          && request.resource.data.updatedAt == request.time
+          && request.resource.data.updatedBy == request.auth.uid
+          && validPriceHistoryLink(storeId,
+            productId + '_PURCHASE_' + string(request.resource.data.revision), {
+              'productId': productId, 'priceType': 'PURCHASE',
+              'price': request.resource.data.purchasePrice,
+              'revision': request.resource.data.revision,
+              'createdBy': request.auth.uid, 'createdAt': request.time
+            });
+        allow delete: if false;
+      }
+
+      match /priceHistory/{historyId} {
+        // Admin sees all history. Employees may read selling entries only.
+        allow get: if isAdmin(storeId)
+          || (isEmployee(storeId) && resource.data.priceType == 'SELLING');
+        allow list: if isAdmin(storeId)
+          || (isEmployee(storeId) && resource.data.priceType == 'SELLING');
+        allow create: if isAdmin(storeId)
+          && validPriceHistoryLink(storeId, historyId, request.resource.data);
         allow update, delete: if false;
       }
 
