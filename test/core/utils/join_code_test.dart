@@ -18,6 +18,15 @@ void main() {
       );
     });
 
+    test('recognizes the required grouped format and reuses normalization', () {
+      const displayCode = 'SMAE-S9H4-LQ78-XCCY';
+
+      expect(JoinCode.isValidFormat(displayCode), isTrue);
+      expect(JoinCode.isValidFormat(displayCode.toLowerCase()), isTrue);
+      expect(JoinCode.isValidFormat('SMAES9H4-LQ78-XCCY'), isFalse);
+      expect(JoinCode.normalize(displayCode), 'smaes9h4lq78xccy');
+    });
+
     test('generates readable 80-bit codes in the required format', () {
       final code = JoinCode.generate();
 

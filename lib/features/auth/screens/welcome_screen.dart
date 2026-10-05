@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'employee_registration_screen.dart';
 import 'login_screen.dart';
 import 'setup_screen.dart';
 
@@ -7,9 +8,7 @@ class WelcomeScreen extends StatelessWidget {
   const WelcomeScreen({super.key});
 
   void _open(BuildContext context, Widget screen) {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (_) => screen),
-    );
+    Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => screen));
   }
 
   @override
@@ -31,9 +30,8 @@ class WelcomeScreen extends StatelessWidget {
                     Text(
                       'آدم',
                       textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.headlineLarge?.copyWith(
-                            fontWeight: FontWeight.bold,
-                          ),
+                      style: Theme.of(context).textTheme.headlineLarge
+                          ?.copyWith(fontWeight: FontWeight.bold),
                     ),
                     const SizedBox(height: 12),
                     Text(
@@ -55,6 +53,15 @@ class WelcomeScreen extends StatelessWidget {
                       child: OutlinedButton(
                         onPressed: () => _open(context, const LoginScreen()),
                         child: const Text('لدي متجر'),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    SizedBox(
+                      height: 52,
+                      child: TextButton(
+                        onPressed: () =>
+                            _open(context, const EmployeeRegistrationScreen()),
+                        child: const Text('إنشاء حساب موظف'),
                       ),
                     ),
                   ],

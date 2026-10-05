@@ -28,6 +28,12 @@ class JoinCode {
     return normalized.toLowerCase();
   }
 
+  /// Checks the user-facing XXXX-XXXX-XXXX-XXXX format before normalization.
+  static bool isValidFormat(String value) => RegExp(
+    r'^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{4}(-[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{4}){3}$',
+    caseSensitive: false,
+  ).hasMatch(value.trim());
+
   /// Formats a normalized code as four groups of four characters.
   static String format(String value) {
     final normalized = value.replaceAll('-', '').toUpperCase();

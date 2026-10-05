@@ -32,45 +32,20 @@ class _StoreJoinCodeScreenState extends State<StoreJoinCodeScreen> {
 
   Future<void> _loadOrCreateCode() async {
     try {
-      final code = await _service.ensureJoinCode(
-        widget.user.storeId,
-        modelUid: widget.user.uid,
-      );
+      final code = await _service.ensureJoinCode(widget.user.storeId);
       if (!mounted) return;
       setState(() {
         _joinCode = code;
         _errorMessage = null;
         _isLoading = false;
       });
-    } catch (error, stackTrace) {
-      _logDiagnosticError(error, stackTrace);
+    } catch (error) {
       if (!mounted) return;
       setState(() {
-        _errorMessage = _diagnosticErrorText(error, stackTrace);
+        _errorMessage = _messageFor(error);
         _isLoading = false;
       });
     }
-  }
-
-  void _logDiagnosticError(Object error, StackTrace stackTrace) {
-    if (error is FirebaseException) {
-      debugPrint('[StoreJoinCodeDiagnostic] FirebaseException');
-      debugPrint('code: ${error.code}');
-      debugPrint('message: ${error.message}');
-      debugPrint('plugin: ${error.plugin}');
-      debugPrint('stack trace:\n$stackTrace');
-      return;
-    }
-    debugPrint('[StoreJoinCodeDiagnostic] error: $error');
-    debugPrint('stack trace:\n$stackTrace');
-  }
-
-  String _diagnosticErrorText(Object error, StackTrace stackTrace) {
-    if (error is FirebaseException) {
-      return 'FirebaseException: code=${error.code}, '
-          'message=${error.message}, plugin=${error.plugin}\n$stackTrace';
-    }
-    return '$error\n$stackTrace';
   }
 
   Future<void> _rotateCode() async {
