@@ -93,6 +93,30 @@ service cloud.firestore {
       return /databases/$(database)/documents/stores/$(storeId)/companies/$(companyId);
     }
 
+    function purchaseInvoicePath(storeId, invoiceId) {
+      return /databases/$(database)/documents/stores/$(storeId)/purchaseInvoices/$(invoiceId);
+    }
+
+    function supplierDebtPath(storeId, debtId) {
+      return /databases/$(database)/documents/stores/$(storeId)/supplierDebts/$(debtId);
+    }
+
+    function supplierPaymentPath(storeId, paymentId) {
+      return /databases/$(database)/documents/stores/$(storeId)/supplierPayments/$(paymentId);
+    }
+
+    function paymentAllocationPath(storeId, paymentId, slot) {
+      return /databases/$(database)/documents/stores/$(storeId)/supplierPayments/$(paymentId)/allocations/$(slot);
+    }
+
+    function cashWithdrawalPath(storeId, withdrawalId) {
+      return /databases/$(database)/documents/stores/$(storeId)/cashWithdrawals/$(withdrawalId);
+    }
+
+    function operationPath(storeId, operationId) {
+      return /databases/$(database)/documents/stores/$(storeId)/operations/$(operationId);
+    }
+
     function hasOnlyKeys(data, keys) {
       return data.keys().hasAll(keys) && data.keys().hasOnly(keys);
     }
