@@ -76,6 +76,9 @@ class _EmployeeRegistrationScreenState
         joinCode: _joinCodeController.text,
       );
       // AuthGate observes the newly signed-in Firebase user.
+      if (mounted) {
+        Navigator.of(context).pop();
+      }
     } on InvalidEmployeeJoinCodeException {
       if (mounted) {
         _showMessage('كود الانضمام غير صحيح أو لم يعد فعالًا.', isError: true);
