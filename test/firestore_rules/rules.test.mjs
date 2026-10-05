@@ -1358,17 +1358,21 @@ function supplierPaymentBatch(db, {
   allocations,
   source = 'OUTSIDE_CASH',
   notes,
+  overrideManifest,
   overrideAmountFils,
   addExtraAllocation = false,
   createdBy = 'admin-1',
 } = {}) {
   const amountFils = overrideAmountFils ??
     allocations.reduce((total, allocation) => total + allocation.amountFils, 0);
-  const allocationAmountsByDebt = Object.fromEntries(
-    allocations.map(({ invoiceId, amountFils: allocationAmount }) => [
+  const allocationManifest = overrideManifest ??
+    allocations.map(({ invoiceId, amountFils: allocationAmount }) => ({
       invoiceId,
-      allocationAmount,
-    ]),
+      debtId: invoiceId,
+      amountFils: allocationAmount,
+    }));
+  const allocationAmountsByDebt = Object.fromEntries(
+    allocationManifest.map((entry) => [entry.debtId, entry.amountFils]),
   );
   const batch = writeBatch(db);
   batch.set(doc(db, 'stores', 'store-1', 'supplierPayments', paymentId), {
@@ -1377,8 +1381,9 @@ function supplierPaymentBatch(db, {
     amountFils,
     source,
     status: 'ACTIVE',
-    allocationCount: allocations.length,
+    allocationCount: allocationManifest.length,
     allocatedAmountFils: amountFils,
+    allocationManifest,
     allocationAmountsByDebt,
     createdAt: serverTimestamp(),
     createdBy,
@@ -1659,22 +1664,16 @@ test('supplier payment atomically decreases debt and creates one linked withdraw
   await assertSucceeds(supplierPaymentBatch(db, {
     paymentId: 'payment-1',
     allocations: [{ invoiceId: 'pay-invoice-1', amountFils: 4000 }],
-    source: 'OUTSIDE_CASH',
+    source: 'SHOP_CASH',
   }).commit());
   const debt = await getDoc(
     doc(db, 'stores', 'store-1', 'supplierDebts', 'pay-invoice-1'),
   );
   assert.equal(debt.data().remainingAmountFils, 6000);
-  assert.equal(
-    (await getDoc(doc(
-      db,
-      'stores',
-      'store-1',
-      'cashWithdrawals',
-      'supplierPayment_payment-1',
-    ))).exists(),
-    false,
+  const withdrawal = await getDoc(
+    doc(db, 'stores', 'store-1', 'cashWithdrawals', 'supplierPayment_payment-1'),
   );
+  assert.equal(withdrawal.data().amountFils, 4000);
 });
 
 test('five-slot supplier payment is allowed and mismatched allocations are denied', async () => {
