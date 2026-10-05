@@ -830,6 +830,31 @@ test('Admin can list active and inactive companies', async () => {
   assert.equal(result.size, 2);
 });
 
+test('Admin can get inactive companies but company claims cannot be listed', async () => {
+  await seedCompany({
+    companyId: 'inactive-company',
+    name: 'Inactive Company',
+    isActive: false,
+  });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  const company = await assertSucceeds(getDoc(
+    doc(db, 'stores', 'store-1', 'companies', 'inactive-company'),
+  ));
+  assert.equal(company.data().isActive, false);
+  await assertSucceeds(getDoc(
+    doc(
+      db,
+      'stores',
+      'store-1',
+      'companyNameKeys',
+      companyNameKey('Inactive Company'),
+    ),
+  ));
+  await assertPermissionDenied(getDocs(
+    collection(db, 'stores', 'store-1', 'companyNameKeys'),
+  ));
+});
+
 test('Employee can query only active companies', async () => {
   await seedEmployee();
   await seedCompany();
@@ -1040,6 +1065,13 @@ test('Employee cannot edit companies or create/delete name claims', async () => 
     { companyId: 'employee-company', normalizedName: 'employee' },
   ));
   await assertFails(deleteDoc(doc(
+    db,
+    'stores',
+    'store-1',
+    'companyNameKeys',
+    companyNameKey('Example Company'),
+  )));
+  await assertPermissionDenied(getDoc(doc(
     db,
     'stores',
     'store-1',

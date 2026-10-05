@@ -36,7 +36,6 @@ class CompanyRepository {
   Future<List<CompanyModel>> listActiveCompanies(String storeId) async {
     final snapshot = await _companies(storeId)
         .where('isActive', isEqualTo: true)
-        .orderBy('name')
         .get();
     return snapshot.docs.map(CompanyModel.fromDocument).toList();
   }
