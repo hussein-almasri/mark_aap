@@ -1358,21 +1358,17 @@ function supplierPaymentBatch(db, {
   allocations,
   source = 'OUTSIDE_CASH',
   notes,
-  overrideManifest,
   overrideAmountFils,
   addExtraAllocation = false,
   createdBy = 'admin-1',
 } = {}) {
   const amountFils = overrideAmountFils ??
     allocations.reduce((total, allocation) => total + allocation.amountFils, 0);
-  const allocationManifest = overrideManifest ??
-    allocations.map(({ invoiceId, amountFils: allocationAmount }) => ({
-      invoiceId,
-      debtId: invoiceId,
-      amountFils: allocationAmount,
-    }));
   const allocationAmountsByDebt = Object.fromEntries(
-    allocationManifest.map((entry) => [entry.debtId, entry.amountFils]),
+    allocations.map(({ invoiceId, amountFils: allocationAmount }) => [
+      invoiceId,
+      allocationAmount,
+    ]),
   );
   const batch = writeBatch(db);
   batch.set(doc(db, 'stores', 'store-1', 'supplierPayments', paymentId), {
@@ -1381,9 +1377,8 @@ function supplierPaymentBatch(db, {
     amountFils,
     source,
     status: 'ACTIVE',
-    allocationCount: allocationManifest.length,
+    allocationCount: allocations.length,
     allocatedAmountFils: amountFils,
-    allocationManifest,
     allocationAmountsByDebt,
     createdAt: serverTimestamp(),
     createdBy,
@@ -1438,9 +1433,6 @@ function supplierPaymentBatch(db, {
       },
     );
   }
-  batch.update(doc(db, 'stores', 'store-1', 'operations', paymentId), {
-    status: 'COMPLETED',
-  });
   return batch;
 }
 
@@ -1455,11 +1447,6 @@ async function seedPaymentForCancellation({
     invoiceId,
     amountFils: allocationAmountFils,
   }));
-  await startFinancialOperation(db, {
-    operationId: paymentId,
-    type: 'CREATE_SUPPLIER_PAYMENT',
-    paymentId,
-  });
   await assertSucceeds(supplierPaymentBatch(db, {
     paymentId,
     allocations,
@@ -1669,24 +1656,25 @@ test('supplier payment atomically decreases debt and creates one linked withdraw
   await seedCompany();
   await seedFinancialInvoice({ invoiceId: 'pay-invoice-1' });
   const db = testEnv.authenticatedContext('employee-1').firestore();
-  await startFinancialOperation(db, {
-    operationId: 'payment-1',
-    type: 'CREATE_SUPPLIER_PAYMENT',
-    paymentId: 'payment-1',
-  });
   await assertSucceeds(supplierPaymentBatch(db, {
     paymentId: 'payment-1',
     allocations: [{ invoiceId: 'pay-invoice-1', amountFils: 4000 }],
-    source: 'SHOP_CASH',
+    source: 'OUTSIDE_CASH',
   }).commit());
   const debt = await getDoc(
     doc(db, 'stores', 'store-1', 'supplierDebts', 'pay-invoice-1'),
   );
-  const withdrawal = await getDoc(
-    doc(db, 'stores', 'store-1', 'cashWithdrawals', 'supplierPayment_payment-1'),
-  );
   assert.equal(debt.data().remainingAmountFils, 6000);
-  assert.equal(withdrawal.data().amountFils, 4000);
+  assert.equal(
+    (await getDoc(doc(
+      db,
+      'stores',
+      'store-1',
+      'cashWithdrawals',
+      'supplierPayment_payment-1',
+    ))).exists(),
+    false,
+  );
 });
 
 test('five-slot supplier payment is allowed and mismatched allocations are denied', async () => {
@@ -1698,11 +1686,6 @@ test('five-slot supplier payment is allowed and mismatched allocations are denie
     });
   }
   const db = testEnv.authenticatedContext('admin-1').firestore();
-  await startFinancialOperation(db, {
-    operationId: 'five-slot-payment',
-    type: 'CREATE_SUPPLIER_PAYMENT',
-    paymentId: 'five-slot-payment',
-  });
   const allocations = Array.from({ length: 5 }, (_, index) => ({
     invoiceId: `multi-invoice-${index + 1}`,
     amountFils: 1000,
@@ -1715,11 +1698,6 @@ test('five-slot supplier payment is allowed and mismatched allocations are denie
   }).commit());
 
   await seedFinancialInvoice({ invoiceId: 'invalid-payment-invoice' });
-  await startFinancialOperation(db, {
-    operationId: 'bad-payment',
-    type: 'CREATE_SUPPLIER_PAYMENT',
-    paymentId: 'bad-payment',
-  });
   await assertFails(supplierPaymentBatch(db, {
     paymentId: 'bad-payment',
     allocations: [{ invoiceId: 'invalid-payment-invoice', amountFils: 1000 }],
@@ -1732,11 +1710,6 @@ test('payment cannot overpay, duplicate an allocation, or create an unpaired wit
   await seedCompany();
   await seedFinancialInvoice({ invoiceId: 'overpay-invoice', supplierDebtAmountFils: 1000 });
   const db = testEnv.authenticatedContext('admin-1').firestore();
-  await startFinancialOperation(db, {
-    operationId: 'overpayment',
-    type: 'CREATE_SUPPLIER_PAYMENT',
-    paymentId: 'overpayment',
-  });
   await assertFails(supplierPaymentBatch(db, {
     paymentId: 'overpayment',
     allocations: [{
@@ -1747,11 +1720,6 @@ test('payment cannot overpay, duplicate an allocation, or create an unpaired wit
     source: 'OUTSIDE_CASH',
   }).commit());
 
-  await startFinancialOperation(db, {
-    operationId: 'duplicate-allocation',
-    type: 'CREATE_SUPPLIER_PAYMENT',
-    paymentId: 'duplicate-allocation',
-  });
   await assertFails(supplierPaymentBatch(db, {
     paymentId: 'duplicate-allocation',
     allocations: [

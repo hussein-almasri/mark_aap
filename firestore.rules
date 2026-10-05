@@ -551,113 +551,66 @@ service cloud.firestore {
           : existsAfter(debtRef));
     }
 
-    function paymentManifestAmount(manifest, slot) {
-      return manifest.size() > slot ? manifest[slot].amountFils : 0;
+    function paymentAllocationAmount(data, slot) {
+      return data.allocationCount > slot
+        ? data.allocationAmountsByDebt[
+            data.allocationAmountsByDebt.keys()[slot]
+          ]
+        : 0;
     }
 
-    function paymentManifestTotal(manifest) {
-      return paymentManifestAmount(manifest, 0)
-        + paymentManifestAmount(manifest, 1)
-        + paymentManifestAmount(manifest, 2)
-        + paymentManifestAmount(manifest, 3)
-        + paymentManifestAmount(manifest, 4);
+    function paymentAllocationTotal(data) {
+      return paymentAllocationAmount(data, 0)
+        + paymentAllocationAmount(data, 1)
+        + paymentAllocationAmount(data, 2)
+        + paymentAllocationAmount(data, 3)
+        + paymentAllocationAmount(data, 4);
     }
 
-    function validPaymentManifestEntry(entry) {
-      return entry is map
-        && hasOnlyKeys(entry, ['invoiceId', 'debtId', 'amountFils'])
-        && entry.invoiceId is string
-        && entry.invoiceId != ''
-        && entry.debtId is string
-        && entry.debtId != ''
-        && entry.amountFils is int
-        && entry.amountFils > 0;
+    function validPaymentAllocation(data, slot) {
+      let debtId = data.allocationAmountsByDebt.keys()[slot];
+      let amount = data.allocationAmountsByDebt[debtId];
+
+      return debtId is string && debtId != ''
+        && amount is int && amount > 0;
     }
 
-    function paymentManifestHasUniqueReferences(data) {
-      let manifest = data.allocationManifest;
-
-      return (data.allocationCount < 2
-          || (manifest[0].invoiceId != manifest[1].invoiceId
-            && manifest[0].debtId != manifest[1].debtId))
-        && (data.allocationCount < 3
-          || (manifest[0].invoiceId != manifest[2].invoiceId
-            && manifest[0].debtId != manifest[2].debtId
-            && manifest[1].invoiceId != manifest[2].invoiceId
-            && manifest[1].debtId != manifest[2].debtId))
-        && (data.allocationCount < 4
-          || (manifest[0].invoiceId != manifest[3].invoiceId
-            && manifest[0].debtId != manifest[3].debtId
-            && manifest[1].invoiceId != manifest[3].invoiceId
-            && manifest[1].debtId != manifest[3].debtId
-            && manifest[2].invoiceId != manifest[3].invoiceId
-            && manifest[2].debtId != manifest[3].debtId))
-        && (data.allocationCount < 5
-          || (manifest[0].invoiceId != manifest[4].invoiceId
-            && manifest[0].debtId != manifest[4].debtId
-            && manifest[1].invoiceId != manifest[4].invoiceId
-            && manifest[1].debtId != manifest[4].debtId
-            && manifest[2].invoiceId != manifest[4].invoiceId
-            && manifest[2].debtId != manifest[4].debtId
-            && manifest[3].invoiceId != manifest[4].invoiceId
-            && manifest[3].debtId != manifest[4].debtId));
-    }
-
-    function paymentManifestEntryMatchesMap(data, slot) {
-      let entry = data.allocationManifest[slot];
-
-      return data.allocationAmountsByDebt.keys().hasAny([entry.debtId])
-        && data.allocationAmountsByDebt[entry.debtId] == entry.amountFils;
-    }
-
-    function paymentManifestDebtChangeMatches(storeId, paymentId, data, slot) {
-      let entry = data.allocationManifest[slot];
-      let debtPath = supplierDebtPath(storeId, entry.debtId);
+    function paymentAllocationDebtChangeMatches(storeId, paymentId, data, slot) {
+      let debtId = data.allocationAmountsByDebt.keys()[slot];
+      let debtPath = supplierDebtPath(storeId, debtId);
       let debtAfter = getAfter(debtPath).data;
 
-      return paymentManifestEntryMatchesMap(data, slot)
-        && entry.invoiceId == entry.debtId
-        && existsAfter(debtPath)
-        && debtAfter.invoiceId == entry.invoiceId
+      return existsAfter(debtPath)
+        && validPaymentAllocation(data, slot)
+        && debtAfter.invoiceId == debtId
         && debtAfter.companyId == data.companyId
         && debtAfter.companyName == data.companyName
         && debtAfter.status in ['OPEN', 'PAID']
         && debtAfter.lastOperationId == paymentId;
     }
 
-    function validPaymentManifestAfter(storeId, paymentId, data) {
-      return data.allocationManifest is list
-        && data.allocationAmountsByDebt is map
+    function validPaymentAllocationsAfter(storeId, paymentId, data) {
+      return data.allocationAmountsByDebt is map
         && data.allocationCount is int
         && data.allocationCount >= 1
         && data.allocationCount <= 5
-        && data.allocationManifest.size() == data.allocationCount
         && data.allocationAmountsByDebt.size() == data.allocationCount
         && data.allocatedAmountFils == data.amountFils
-        && paymentManifestTotal(data.allocationManifest)
-          == data.allocatedAmountFils
-        && validPaymentManifestEntry(data.allocationManifest[0])
-        && paymentManifestDebtChangeMatches(storeId, paymentId, data, 0)
+        && paymentAllocationTotal(data) == data.allocatedAmountFils
+        && validPaymentAllocation(data, 0)
+        && paymentAllocationDebtChangeMatches(storeId, paymentId, data, 0)
         && (data.allocationCount < 2
-          || (validPaymentManifestEntry(data.allocationManifest[1])
-            && paymentManifestDebtChangeMatches(storeId, paymentId, data, 1)))
+          || (validPaymentAllocation(data, 1)
+            && paymentAllocationDebtChangeMatches(storeId, paymentId, data, 1)))
         && (data.allocationCount < 3
-          || (validPaymentManifestEntry(data.allocationManifest[2])
-            && paymentManifestDebtChangeMatches(storeId, paymentId, data, 2)))
+          || (validPaymentAllocation(data, 2)
+            && paymentAllocationDebtChangeMatches(storeId, paymentId, data, 2)))
         && (data.allocationCount < 4
-          || (validPaymentManifestEntry(data.allocationManifest[3])
-            && paymentManifestDebtChangeMatches(storeId, paymentId, data, 3)))
+          || (validPaymentAllocation(data, 3)
+            && paymentAllocationDebtChangeMatches(storeId, paymentId, data, 3)))
         && (data.allocationCount < 5
-          || (validPaymentManifestEntry(data.allocationManifest[4])
-            && paymentManifestDebtChangeMatches(storeId, paymentId, data, 4)))
-        && paymentManifestHasUniqueReferences(data);
-    }
-
-    function validPaymentOperationAfter(storeId, paymentId, data) {
-      return validCompletedOperationAfter(
-          storeId, data.operationId, 'CREATE_SUPPLIER_PAYMENT', paymentId,
-          'paymentId'
-        );
+          || (validPaymentAllocation(data, 4)
+            && paymentAllocationDebtChangeMatches(storeId, paymentId, data, 4)));
     }
 
     function validSupplierPaymentCreate(storeId, paymentId) {
@@ -670,15 +623,13 @@ service cloud.firestore {
       return isFinancialStoreMember(storeId)
         && data.keys().hasAll([
           'companyId', 'companyName', 'amountFils', 'source', 'status',
-          'allocationCount', 'allocatedAmountFils', 'allocationManifest',
-          'allocationAmountsByDebt',
+          'allocationCount', 'allocatedAmountFils', 'allocationAmountsByDebt',
           'createdAt', 'createdBy', 'operationId'
         ])
         && data.keys().hasOnly([
           'companyId', 'companyName', 'amountFils', 'source', 'status',
-          'allocationCount', 'allocatedAmountFils', 'allocationManifest',
-          'allocationAmountsByDebt', 'createdAt', 'createdBy', 'operationId',
-          'notes'
+          'allocationCount', 'allocatedAmountFils', 'allocationAmountsByDebt',
+          'createdAt', 'createdBy', 'operationId', 'notes'
         ])
         && data.companyId is string
         && data.companyId != ''
@@ -695,8 +646,7 @@ service cloud.firestore {
           || (data.notes is string
             && data.notes == data.notes.trim()
             && data.notes.size() <= 500))
-        && validPaymentManifestAfter(storeId, paymentId, data)
-        && validPaymentOperationAfter(storeId, paymentId, data)
+        && validPaymentAllocationsAfter(storeId, paymentId, data)
         && (data.source == 'SHOP_CASH'
           ? (existsAfter(withdrawalRef)
             && hasOnlyKeys(withdrawal, [
@@ -869,7 +819,7 @@ service cloud.firestore {
         && operation.invoiceId == debtId
         && operation.createdBy == request.auth.uid
         && invoiceAfter.cancellationOperationId == operationId
-        && request.resource.data.status == 'CANCELLED'
+            && request.resource.data.status == 'CANCELLED'
             && request.resource.data.remainingAmountFils
               == resource.data.remainingAmountFils
             && request.resource.data.lastOperationId == operationId
@@ -886,13 +836,12 @@ service cloud.firestore {
     }
 
     function paymentCancellationDebtMarkerMatches(storeId, paymentId, data, slot) {
-      let manifest = data.allocationManifest;
-      let entry = manifest[slot];
-      let debtRef = supplierDebtPath(storeId, entry.debtId);
+      let debtId = data.allocationAmountsByDebt.keys()[slot];
+      let debtRef = supplierDebtPath(storeId, debtId);
       let debt = getAfter(debtRef).data;
 
       return existsAfter(debtRef)
-        && debt.invoiceId == entry.invoiceId
+        && debt.invoiceId == debtId
         && debt.companyId == data.companyId
         && debt.lastOperationId == data.cancellationOperationId;
     }
