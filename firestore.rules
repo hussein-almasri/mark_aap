@@ -105,10 +105,6 @@ service cloud.firestore {
       return /databases/$(database)/documents/stores/$(storeId)/supplierPayments/$(paymentId);
     }
 
-    function paymentAllocationPath(storeId, paymentId, slot) {
-      return /databases/$(database)/documents/stores/$(storeId)/supplierPayments/$(paymentId)/allocations/$(slot);
-    }
-
     function cashWithdrawalPath(storeId, withdrawalId) {
       return /databases/$(database)/documents/stores/$(storeId)/cashWithdrawals/$(withdrawalId);
     }
@@ -273,6 +269,782 @@ service cloud.firestore {
         && companyAfter.updatedAt == request.time
         && existsAfter(newClaimPath)
         && companyClaimMatches(newClaim, companyId, companyAfter.name);
+    }
+
+    function purchaseInvoicePhotoPath(storeId, invoiceId, photoId) {
+      return /databases/$(database)/documents/stores/$(storeId)/purchaseInvoices/$(invoiceId)/photos/$(photoId);
+    }
+
+    function validInvoicePhotoIds(photoIds) {
+      return photoIds is list
+        && photoIds.size() <= 3
+        && (photoIds.size() < 1
+          || (photoIds[0] is string
+            && photoIds[0].matches('^[A-Za-z0-9_-]{1,80}$')))
+        && (photoIds.size() < 2
+          || (photoIds[1] is string
+            && photoIds[1].matches('^[A-Za-z0-9_-]{1,80}$')
+            && photoIds[0] != photoIds[1]))
+        && (photoIds.size() < 3
+          || (photoIds[2] is string
+            && photoIds[2].matches('^[A-Za-z0-9_-]{1,80}$')
+            && photoIds[0] != photoIds[2]
+            && photoIds[1] != photoIds[2]));
+    }
+
+    function validOperationFields(data, operationId) {
+      return data.keys().hasAll([
+          'operationId', 'type', 'createdBy', 'createdAt', 'status',
+          'retryCount'
+        ])
+        && data.keys().hasOnly([
+          'operationId', 'type', 'createdBy', 'createdAt', 'status',
+          'retryCount', 'errorCode', 'errorMessage', 'failedAt',
+          'invoiceId', 'paymentId', 'photoIds'
+        ])
+        && data.operationId == operationId
+        && data.type in [
+          'CREATE_PURCHASE_INVOICE', 'CANCEL_PURCHASE_INVOICE',
+          'CREATE_SUPPLIER_PAYMENT', 'CANCEL_SUPPLIER_PAYMENT'
+        ]
+        && data.createdBy == request.auth.uid
+        && data.createdAt is timestamp
+        && data.retryCount is int
+        && data.retryCount >= 0
+        && data.retryCount <= 3
+        && data.status in ['PROCESSING', 'COMPLETED', 'FAILED'];
+    }
+
+    function validOperationCreate(storeId, operationId) {
+      let data = request.resource.data;
+
+      return isFinancialStoreMember(storeId)
+        && validOperationFields(data, operationId)
+        && data.status == 'PROCESSING'
+        && data.retryCount == 0
+        && data.createdAt == request.time
+        && (data.type == 'CREATE_PURCHASE_INVOICE'
+          ? data.keys().hasAny(['invoiceId'])
+            && !data.keys().hasAny(['paymentId'])
+            && data.invoiceId == operationId
+            && (!data.keys().hasAny(['photoIds'])
+              || validInvoicePhotoIds(data.photoIds))
+          : (data.type == 'CREATE_SUPPLIER_PAYMENT'
+            ? data.keys().hasAny(['paymentId'])
+              && !data.keys().hasAny(['invoiceId', 'photoIds'])
+              && data.paymentId == operationId
+            : (data.type == 'CANCEL_PURCHASE_INVOICE'
+              ? isAdmin(storeId)
+                && data.keys().hasAny(['invoiceId'])
+                && !data.keys().hasAny(['paymentId', 'photoIds'])
+                && data.invoiceId is string
+              : (data.type == 'CANCEL_SUPPLIER_PAYMENT'
+                && isAdmin(storeId)
+                && data.keys().hasAny(['paymentId'])
+                && !data.keys().hasAny(['invoiceId', 'photoIds'])
+                && data.paymentId is string))));
+    }
+
+    function validOperationCompletion(storeId, operationId) {
+      let operationType = resource.data.type;
+      let data = request.resource.data;
+      return isFinancialStoreMember(storeId)
+        && resource.data.status == 'PROCESSING'
+        && data.status == 'COMPLETED'
+        && data.diff(resource.data).affectedKeys().hasOnly(['status'])
+        && validOperationFields(data, operationId)
+        && data.operationId == resource.data.operationId
+        && data.type == operationType
+        && data.createdBy == resource.data.createdBy
+        && data.createdAt == resource.data.createdAt
+        && data.retryCount == resource.data.retryCount
+        && (operationType in [
+            'CREATE_PURCHASE_INVOICE', 'CANCEL_PURCHASE_INVOICE'
+          ]
+          ? validInvoiceOperationCompletion(
+              storeId, operationType, operationId
+            )
+          : validPaymentOperationCompletion(
+              storeId, operationType, operationId
+            ));
+    }
+
+    function validInvoiceOperationCompletion(storeId, operationType, operationId) {
+      let invoiceId = resource.data.invoiceId;
+      let invoicePath = purchaseInvoicePath(storeId, invoiceId);
+      let invoice = getAfter(invoicePath).data;
+      return operationType in [
+          'CREATE_PURCHASE_INVOICE', 'CANCEL_PURCHASE_INVOICE'
+        ]
+        && invoiceId is string
+        && existsAfter(invoicePath)
+        && (operationType == 'CREATE_PURCHASE_INVOICE'
+          ? invoice.operationId == operationId && invoice.status == 'ACTIVE'
+          : invoice.cancellationOperationId == operationId
+            && invoice.status == 'CANCELLED');
+    }
+
+    function validPaymentOperationCompletion(storeId, operationType, operationId) {
+      let paymentId = resource.data.paymentId;
+      let paymentPath = supplierPaymentPath(storeId, paymentId);
+      let payment = getAfter(paymentPath).data;
+      return operationType in [
+          'CREATE_SUPPLIER_PAYMENT', 'CANCEL_SUPPLIER_PAYMENT'
+        ]
+        && paymentId is string
+        && existsAfter(paymentPath)
+        && (operationType == 'CREATE_SUPPLIER_PAYMENT'
+          ? payment.operationId == operationId && payment.status == 'ACTIVE'
+          : payment.cancellationOperationId == operationId
+            && payment.status == 'CANCELLED');
+    }
+
+    function validCompletedOperationAfter(
+      storeId, operationId, operationType, businessId, fieldName
+    ) {
+      let path = operationPath(storeId, operationId);
+      let operation = getAfter(path).data;
+
+      return existsAfter(path)
+        && validOperationFields(operation, operationId)
+        && operation.type == operationType
+        && operation.status == 'COMPLETED'
+        && operation[fieldName] == businessId;
+    }
+
+    function photoMetadataMatchesAfter(storeId, invoiceId, photoId, order) {
+      let path = purchaseInvoicePhotoPath(storeId, invoiceId, photoId);
+      let photo = getAfter(path).data;
+
+      return existsAfter(path)
+        && hasOnlyKeys(photo, [
+          'storagePath', 'sortOrder', 'mimeType', 'sizeBytes', 'createdAt'
+        ])
+        && photo.storagePath
+          == 'stores/' + storeId + '/purchaseInvoices/' + invoiceId
+            + '/photos/' + photoId + '.jpg'
+        && photo.sortOrder == order
+        && photo.mimeType == 'image/jpeg'
+        && photo.sizeBytes is int
+        && photo.sizeBytes > 0
+        && photo.sizeBytes <= 5242880
+        && photo.createdAt == request.time;
+    }
+
+    function validInvoicePhotosAfter(storeId, invoiceId, photoIds) {
+      return validInvoicePhotoIds(photoIds)
+        && (photoIds.size() < 1
+          || (photoIds[0] is string
+            && photoMetadataMatchesAfter(storeId, invoiceId, photoIds[0], 0)))
+        && (photoIds.size() < 2
+          || (photoIds[1] is string
+            && photoIds[1] != photoIds[0]
+            && photoMetadataMatchesAfter(storeId, invoiceId, photoIds[1], 1)))
+        && (photoIds.size() < 3
+          || (photoIds[2] is string
+            && photoIds[2] != photoIds[0]
+            && photoIds[2] != photoIds[1]
+            && photoMetadataMatchesAfter(storeId, invoiceId, photoIds[2], 2)));
+    }
+
+    function validInvoiceOperationAfter(storeId, invoiceId, data) {
+      let path = operationPath(storeId, data.operationId);
+      let operation = getAfter(path).data;
+
+      return validCompletedOperationAfter(
+          storeId, data.operationId, 'CREATE_PURCHASE_INVOICE', invoiceId,
+          'invoiceId'
+        )
+        && ((!operation.keys().hasAny(['photoIds'])
+            && data.photoIds.size() == 0)
+          || operation.photoIds == data.photoIds);
+    }
+
+    function validInvoiceCreate(storeId, invoiceId) {
+      let data = request.resource.data;
+      let companyRef = companyPath(storeId, data.companyId);
+      let company = get(companyRef).data;
+      let debtRef = supplierDebtPath(storeId, invoiceId);
+      let withdrawalRef = cashWithdrawalPath(storeId, 'invoice_' + invoiceId);
+
+      return isFinancialStoreMember(storeId)
+        && data.keys().hasAll([
+          'companyId', 'companyName', 'totalAmountFils',
+          'shopCashAmountFils', 'outsideCashAmountFils',
+          'supplierDebtAmountFils', 'status', 'createdAt', 'createdBy',
+          'operationId', 'photoIds'
+        ])
+        && data.keys().hasOnly([
+          'companyId', 'companyName', 'supplierInvoiceNumber',
+          'totalAmountFils', 'shopCashAmountFils', 'outsideCashAmountFils',
+          'supplierDebtAmountFils', 'notes', 'status', 'createdAt',
+          'createdBy', 'operationId', 'photoIds'
+        ])
+        && data.companyId is string
+        && data.companyId != ''
+        && exists(companyRef)
+        && company.isActive == true
+        && company.name is string
+        && data.companyName == company.name
+        && data.totalAmountFils is int
+        && data.totalAmountFils > 0
+        && data.shopCashAmountFils is int
+        && data.shopCashAmountFils >= 0
+        && data.outsideCashAmountFils is int
+        && data.outsideCashAmountFils >= 0
+        && data.supplierDebtAmountFils is int
+        && data.supplierDebtAmountFils >= 0
+        && data.shopCashAmountFils + data.outsideCashAmountFils
+          + data.supplierDebtAmountFils == data.totalAmountFils
+        && (!data.keys().hasAny(['supplierInvoiceNumber'])
+          || (data.supplierInvoiceNumber is string
+            && data.supplierInvoiceNumber
+              == data.supplierInvoiceNumber.trim()
+            && data.supplierInvoiceNumber.size() <= 100))
+        && (!data.keys().hasAny(['notes'])
+          || (data.notes is string
+            && data.notes == data.notes.trim()
+            && data.notes.size() <= 500))
+        && data.status == 'ACTIVE'
+        && data.createdAt == request.time
+        && data.createdBy == request.auth.uid
+        && data.operationId is string
+        && data.operationId == invoiceId
+        && validInvoiceOperationAfter(storeId, invoiceId, data)
+        && validInvoicePhotoIds(data.photoIds)
+        && (data.supplierDebtAmountFils == 0
+          ? !existsAfter(debtRef)
+          : existsAfter(debtRef))
+        && (data.shopCashAmountFils == 0
+          ? !existsAfter(withdrawalRef)
+          : existsAfter(withdrawalRef));
+    }
+
+    function validInvoiceCancelOperationAfter(storeId, invoiceId, data) {
+      return validCompletedOperationAfter(
+          storeId, data.cancellationOperationId, 'CANCEL_PURCHASE_INVOICE',
+          invoiceId, 'invoiceId'
+        );
+    }
+
+    function validInvoiceCancellation(storeId, invoiceId) {
+      let debtRef = supplierDebtPath(storeId, invoiceId);
+      let data = request.resource.data;
+
+      return isAdmin(storeId)
+        && resource.data.status == 'ACTIVE'
+        && data.status == 'CANCELLED'
+        && data.diff(resource.data).affectedKeys().hasOnly([
+          'status', 'cancelledAt', 'cancelledBy', 'cancellationReason',
+          'cancellationOperationId'
+        ])
+        && data.cancelledAt == request.time
+        && data.cancelledBy == request.auth.uid
+        && data.cancellationReason is string
+        && data.cancellationReason == data.cancellationReason.trim()
+        && data.cancellationReason.matches('.*\\S.*')
+        && data.cancellationReason.size() <= 500
+        && data.cancellationOperationId is string
+        && validInvoiceCancelOperationAfter(storeId, invoiceId, data)
+        && (resource.data.supplierDebtAmountFils == 0
+          ? !exists(debtRef)
+          : existsAfter(debtRef));
+    }
+
+    function paymentManifestAmount(manifest, slot) {
+      return manifest.size() > slot ? manifest[slot].amountFils : 0;
+    }
+
+    function paymentManifestTotal(manifest) {
+      return paymentManifestAmount(manifest, 0)
+        + paymentManifestAmount(manifest, 1)
+        + paymentManifestAmount(manifest, 2)
+        + paymentManifestAmount(manifest, 3)
+        + paymentManifestAmount(manifest, 4);
+    }
+
+    function validPaymentManifestEntry(entry) {
+      return entry is map
+        && hasOnlyKeys(entry, ['invoiceId', 'debtId', 'amountFils'])
+        && entry.invoiceId is string
+        && entry.invoiceId != ''
+        && entry.debtId is string
+        && entry.debtId != ''
+        && entry.amountFils is int
+        && entry.amountFils > 0;
+    }
+
+    function paymentManifestHasUniqueReferences(data) {
+      let manifest = data.allocationManifest;
+
+      return (data.allocationCount < 2
+          || (manifest[0].invoiceId != manifest[1].invoiceId
+            && manifest[0].debtId != manifest[1].debtId))
+        && (data.allocationCount < 3
+          || (manifest[0].invoiceId != manifest[2].invoiceId
+            && manifest[0].debtId != manifest[2].debtId
+            && manifest[1].invoiceId != manifest[2].invoiceId
+            && manifest[1].debtId != manifest[2].debtId))
+        && (data.allocationCount < 4
+          || (manifest[0].invoiceId != manifest[3].invoiceId
+            && manifest[0].debtId != manifest[3].debtId
+            && manifest[1].invoiceId != manifest[3].invoiceId
+            && manifest[1].debtId != manifest[3].debtId
+            && manifest[2].invoiceId != manifest[3].invoiceId
+            && manifest[2].debtId != manifest[3].debtId))
+        && (data.allocationCount < 5
+          || (manifest[0].invoiceId != manifest[4].invoiceId
+            && manifest[0].debtId != manifest[4].debtId
+            && manifest[1].invoiceId != manifest[4].invoiceId
+            && manifest[1].debtId != manifest[4].debtId
+            && manifest[2].invoiceId != manifest[4].invoiceId
+            && manifest[2].debtId != manifest[4].debtId
+            && manifest[3].invoiceId != manifest[4].invoiceId
+            && manifest[3].debtId != manifest[4].debtId));
+    }
+
+    function paymentManifestEntryMatchesMap(data, slot) {
+      let entry = data.allocationManifest[slot];
+
+      return data.allocationAmountsByDebt.keys().hasAny([entry.debtId])
+        && data.allocationAmountsByDebt[entry.debtId] == entry.amountFils;
+    }
+
+    function paymentManifestDebtChangeMatches(storeId, paymentId, data, slot) {
+      let entry = data.allocationManifest[slot];
+      let debtPath = supplierDebtPath(storeId, entry.debtId);
+      let debtAfter = getAfter(debtPath).data;
+
+      return paymentManifestEntryMatchesMap(data, slot)
+        && entry.invoiceId == entry.debtId
+        && existsAfter(debtPath)
+        && debtAfter.invoiceId == entry.invoiceId
+        && debtAfter.companyId == data.companyId
+        && debtAfter.companyName == data.companyName
+        && debtAfter.status in ['OPEN', 'PAID']
+        && debtAfter.lastOperationId == paymentId;
+    }
+
+    function validPaymentManifestAfter(storeId, paymentId, data) {
+      return data.allocationManifest is list
+        && data.allocationAmountsByDebt is map
+        && data.allocationCount is int
+        && data.allocationCount >= 1
+        && data.allocationCount <= 5
+        && data.allocationManifest.size() == data.allocationCount
+        && data.allocationAmountsByDebt.size() == data.allocationCount
+        && data.allocatedAmountFils == data.amountFils
+        && paymentManifestTotal(data.allocationManifest)
+          == data.allocatedAmountFils
+        && validPaymentManifestEntry(data.allocationManifest[0])
+        && paymentManifestDebtChangeMatches(storeId, paymentId, data, 0)
+        && (data.allocationCount < 2
+          || (validPaymentManifestEntry(data.allocationManifest[1])
+            && paymentManifestDebtChangeMatches(storeId, paymentId, data, 1)))
+        && (data.allocationCount < 3
+          || (validPaymentManifestEntry(data.allocationManifest[2])
+            && paymentManifestDebtChangeMatches(storeId, paymentId, data, 2)))
+        && (data.allocationCount < 4
+          || (validPaymentManifestEntry(data.allocationManifest[3])
+            && paymentManifestDebtChangeMatches(storeId, paymentId, data, 3)))
+        && (data.allocationCount < 5
+          || (validPaymentManifestEntry(data.allocationManifest[4])
+            && paymentManifestDebtChangeMatches(storeId, paymentId, data, 4)))
+        && paymentManifestHasUniqueReferences(data);
+    }
+
+    function validPaymentOperationAfter(storeId, paymentId, data) {
+      return validCompletedOperationAfter(
+          storeId, data.operationId, 'CREATE_SUPPLIER_PAYMENT', paymentId,
+          'paymentId'
+        );
+    }
+
+    function validSupplierPaymentCreate(storeId, paymentId) {
+      let data = request.resource.data;
+      let withdrawalRef = cashWithdrawalPath(
+        storeId, 'supplierPayment_' + paymentId
+      );
+      let withdrawal = getAfter(withdrawalRef).data;
+
+      return isFinancialStoreMember(storeId)
+        && data.keys().hasAll([
+          'companyId', 'companyName', 'amountFils', 'source', 'status',
+          'allocationCount', 'allocatedAmountFils', 'allocationManifest',
+          'allocationAmountsByDebt',
+          'createdAt', 'createdBy', 'operationId'
+        ])
+        && data.keys().hasOnly([
+          'companyId', 'companyName', 'amountFils', 'source', 'status',
+          'allocationCount', 'allocatedAmountFils', 'allocationManifest',
+          'allocationAmountsByDebt', 'createdAt', 'createdBy', 'operationId',
+          'notes'
+        ])
+        && data.companyId is string
+        && data.companyId != ''
+        && data.companyName is string
+        && data.amountFils is int
+        && data.amountFils > 0
+        && data.source in ['SHOP_CASH', 'OUTSIDE_CASH']
+        && data.status == 'ACTIVE'
+        && data.createdAt == request.time
+        && data.createdBy == request.auth.uid
+        && data.operationId is string
+        && data.operationId == paymentId
+        && (!data.keys().hasAny(['notes'])
+          || (data.notes is string
+            && data.notes == data.notes.trim()
+            && data.notes.size() <= 500))
+        && validPaymentManifestAfter(storeId, paymentId, data)
+        && validPaymentOperationAfter(storeId, paymentId, data)
+        && (data.source == 'SHOP_CASH'
+          ? (existsAfter(withdrawalRef)
+            && hasOnlyKeys(withdrawal, [
+              'amountFils', 'type', 'supplierPaymentId', 'createdAt',
+              'createdBy', 'status'
+            ])
+            && withdrawal.amountFils == data.amountFils
+            && withdrawal.type == 'PURCHASE_INVOICE'
+            && withdrawal.supplierPaymentId == paymentId
+            && withdrawal.createdAt == request.time
+            && withdrawal.createdBy == request.auth.uid
+            && withdrawal.status == 'ACTIVE')
+          : !existsAfter(withdrawalRef));
+    }
+
+    function debtPaymentSlotMatches(storeId, debtId, paymentId) {
+      let paymentPath = supplierPaymentPath(storeId, paymentId);
+      let payment = getAfter(paymentPath).data;
+      let allocationAmount = payment.allocationAmountsByDebt[debtId];
+      let invoicePath = purchaseInvoicePath(storeId, debtId);
+      let invoice = get(invoicePath).data;
+
+      return existsAfter(paymentPath)
+        && payment.status == 'ACTIVE'
+        && payment.operationId == paymentId
+        && payment.allocationAmountsByDebt.keys().hasAny([debtId])
+        && resource.data.invoiceId == debtId
+        && exists(invoicePath)
+        && invoice.status == 'ACTIVE'
+        && invoice.companyId == resource.data.companyId
+        && invoice.companyName == resource.data.companyName
+        && payment.companyId == resource.data.companyId
+        && payment.companyName == resource.data.companyName
+        && request.resource.data.remainingAmountFils
+          == resource.data.remainingAmountFils - allocationAmount
+        && request.resource.data.remainingAmountFils >= 0
+        && request.resource.data.status
+          == (request.resource.data.remainingAmountFils == 0 ? 'PAID' : 'OPEN')
+        && request.resource.data.lastOperationId == payment.operationId;
+    }
+
+    function validDebtPaymentDecrease(storeId, debtId) {
+      return debtPaymentSlotMatches(
+            storeId, debtId, request.resource.data.lastOperationId
+          )
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'remainingAmountFils', 'status', 'lastOperationId'
+        ])
+        && request.resource.data.invoiceId == resource.data.invoiceId
+        && request.resource.data.companyId == resource.data.companyId
+        && request.resource.data.companyName == resource.data.companyName
+        && request.resource.data.originalAmountFils == resource.data.originalAmountFils
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.operationId == resource.data.operationId;
+    }
+
+    function debtCancellationSlotMatches(storeId, debtId, operationId) {
+      let operationPathRef = operationPath(storeId, operationId);
+      let operation = getAfter(operationPathRef).data;
+      let targetPaymentId = operation.paymentId;
+      let paymentPath = supplierPaymentPath(storeId, targetPaymentId);
+      let paymentBefore = get(paymentPath).data;
+      let paymentAfter = getAfter(paymentPath).data;
+      let allocationAmount = paymentBefore.allocationAmountsByDebt[debtId];
+
+      return existsAfter(operationPathRef)
+        && operation.type == 'CANCEL_SUPPLIER_PAYMENT'
+        && operation.status == 'COMPLETED'
+        && operation.createdBy == request.auth.uid
+        && exists(paymentPath)
+        && existsAfter(paymentPath)
+        && paymentBefore.status == 'ACTIVE'
+        && paymentAfter.status == 'CANCELLED'
+        && paymentBefore.allocationAmountsByDebt.keys().hasAny([debtId])
+        && paymentBefore.operationId == targetPaymentId
+        && paymentAfter.cancellationOperationId is string
+        && operation.paymentId == targetPaymentId
+        && paymentAfter.cancellationOperationId
+          == request.resource.data.lastOperationId
+        && request.resource.data.remainingAmountFils
+          == resource.data.remainingAmountFils + allocationAmount
+        && request.resource.data.remainingAmountFils
+          <= resource.data.originalAmountFils
+        && (resource.data.status == 'CANCELLED'
+          ? request.resource.data.status == 'CANCELLED'
+          : request.resource.data.status == 'OPEN');
+    }
+
+    function validDebtPaymentRestore(storeId, debtId) {
+      return isAdmin(storeId)
+        && debtCancellationSlotMatches(
+          storeId, debtId, request.resource.data.lastOperationId
+        )
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'remainingAmountFils', 'status', 'lastOperationId'
+        ])
+        && request.resource.data.invoiceId == resource.data.invoiceId
+        && request.resource.data.companyId == resource.data.companyId
+        && request.resource.data.companyName == resource.data.companyName
+        && request.resource.data.originalAmountFils == resource.data.originalAmountFils
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.operationId == resource.data.operationId;
+    }
+
+    function validSupplierDebtCreate(storeId, debtId) {
+      let data = request.resource.data;
+      let invoicePath = purchaseInvoicePath(storeId, debtId);
+      let invoice = getAfter(invoicePath).data;
+
+      return isFinancialStoreMember(storeId)
+        && hasOnlyKeys(data, [
+          'invoiceId', 'companyId', 'companyName', 'originalAmountFils',
+          'remainingAmountFils', 'status', 'createdAt', 'createdBy',
+          'operationId', 'lastOperationId'
+        ])
+        && data.invoiceId == debtId
+        && data.companyId is string
+        && data.companyName is string
+        && data.originalAmountFils is int
+        && data.originalAmountFils > 0
+        && data.remainingAmountFils == data.originalAmountFils
+        && data.status == 'OPEN'
+        && data.createdAt == request.time
+        && data.createdBy == request.auth.uid
+        && data.operationId is string
+        && data.lastOperationId == data.operationId
+        && existsAfter(invoicePath)
+        && invoice.status == 'ACTIVE'
+        && invoice.supplierDebtAmountFils == data.originalAmountFils
+        && invoice.companyId == data.companyId
+        && invoice.companyName == data.companyName
+        && invoice.operationId == data.operationId;
+    }
+
+    function validSupplierDebtUpdate(storeId, debtId) {
+      return isFinancialStoreMember(storeId)
+        && resource.data.invoiceId == debtId
+        && resource.data.originalAmountFils is int
+        && resource.data.remainingAmountFils is int
+        && resource.data.remainingAmountFils >= 0
+        && request.resource.data.remainingAmountFils is int
+        && request.resource.data.remainingAmountFils >= 0
+        && (request.resource.data.remainingAmountFils
+              < resource.data.remainingAmountFils
+          ? validDebtPaymentDecrease(storeId, debtId)
+          : (request.resource.data.remainingAmountFils
+                > resource.data.remainingAmountFils
+            ? validDebtPaymentRestore(storeId, debtId)
+            : (isAdmin(storeId)
+              && validDebtInvoiceCancellation(storeId, debtId))));
+    }
+
+    function validDebtInvoiceCancellation(storeId, debtId) {
+      let invoicePath = purchaseInvoicePath(storeId, debtId);
+      let invoiceBefore = get(invoicePath).data;
+      let invoiceAfter = getAfter(invoicePath).data;
+      let operationId = request.resource.data.lastOperationId;
+      let operationPathRef = operationPath(storeId, operationId);
+      let operation = getAfter(operationPathRef).data;
+
+      return exists(invoicePath)
+        && existsAfter(invoicePath)
+        && invoiceBefore.status == 'ACTIVE'
+        && invoiceAfter.status == 'CANCELLED'
+        && existsAfter(operationPathRef)
+        && operation.type == 'CANCEL_PURCHASE_INVOICE'
+        && operation.status == 'COMPLETED'
+        && operation.invoiceId == debtId
+        && operation.createdBy == request.auth.uid
+        && invoiceAfter.cancellationOperationId == operationId
+        && request.resource.data.status == 'CANCELLED'
+            && request.resource.data.remainingAmountFils
+              == resource.data.remainingAmountFils
+            && request.resource.data.lastOperationId == operationId
+            && request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['status', 'lastOperationId'])
+            && request.resource.data.invoiceId == resource.data.invoiceId
+            && request.resource.data.companyId == resource.data.companyId
+            && request.resource.data.companyName == resource.data.companyName
+            && request.resource.data.originalAmountFils
+              == resource.data.originalAmountFils
+            && request.resource.data.createdAt == resource.data.createdAt
+            && request.resource.data.createdBy == resource.data.createdBy
+            && request.resource.data.operationId == resource.data.operationId;
+    }
+
+    function paymentCancellationDebtMarkerMatches(storeId, paymentId, data, slot) {
+      let manifest = data.allocationManifest;
+      let entry = manifest[slot];
+      let debtRef = supplierDebtPath(storeId, entry.debtId);
+      let debt = getAfter(debtRef).data;
+
+      return existsAfter(debtRef)
+        && debt.invoiceId == entry.invoiceId
+        && debt.companyId == data.companyId
+        && debt.lastOperationId == data.cancellationOperationId;
+    }
+
+    function validPaymentCancellationDebtsAfter(storeId, paymentId, data) {
+      return paymentCancellationDebtMarkerMatches(storeId, paymentId, data, 0)
+        && (data.allocationCount < 2
+          || paymentCancellationDebtMarkerMatches(storeId, paymentId, data, 1))
+        && (data.allocationCount < 3
+          || paymentCancellationDebtMarkerMatches(storeId, paymentId, data, 2))
+        && (data.allocationCount < 4
+          || paymentCancellationDebtMarkerMatches(storeId, paymentId, data, 3))
+        && (data.allocationCount < 5
+          || paymentCancellationDebtMarkerMatches(storeId, paymentId, data, 4));
+    }
+
+    function validSupplierPaymentCancellation(storeId, paymentId) {
+      let data = request.resource.data;
+      let withdrawalRef = cashWithdrawalPath(
+        storeId, 'supplierPayment_' + paymentId
+      );
+      let withdrawal = getAfter(withdrawalRef).data;
+
+      return isAdmin(storeId)
+        && resource.data.status == 'ACTIVE'
+        && data.status == 'CANCELLED'
+        && data.diff(resource.data).affectedKeys().hasOnly([
+          'status', 'cancelledAt', 'cancelledBy', 'cancellationReason',
+          'cancellationOperationId'
+        ])
+        && data.cancelledAt == request.time
+        && data.cancelledBy == request.auth.uid
+        && data.cancellationReason is string
+        && data.cancellationReason == data.cancellationReason.trim()
+        && data.cancellationReason.matches('.*\\S.*')
+        && data.cancellationReason.size() <= 500
+        && data.cancellationOperationId is string
+        && validCompletedOperationAfter(
+          storeId, data.cancellationOperationId,
+          'CANCEL_SUPPLIER_PAYMENT', paymentId, 'paymentId'
+        )
+        && validPaymentCancellationDebtsAfter(storeId, paymentId, data)
+        && (resource.data.source == 'SHOP_CASH'
+          ? (exists(withdrawalRef)
+            && existsAfter(withdrawalRef)
+            && withdrawal.status == 'CANCELLED'
+            && withdrawal.supplierPaymentId == paymentId)
+          : !exists(withdrawalRef));
+    }
+
+    function validCashWithdrawalCreate(storeId, withdrawalId) {
+      return request.resource.data.keys().hasAny(['invoiceId'])
+        ? validInvoiceWithdrawalCreate(storeId, withdrawalId)
+        : validSupplierPaymentWithdrawalCreate(storeId, withdrawalId);
+    }
+
+    function validInvoiceWithdrawalCreate(storeId, withdrawalId) {
+      let data = request.resource.data;
+      let invoiceId = data.invoiceId;
+      let invoiceRef = purchaseInvoicePath(storeId, invoiceId);
+      let invoice = getAfter(invoiceRef).data;
+
+      return isFinancialStoreMember(storeId)
+        && hasOnlyKeys(data, [
+          'amountFils', 'type', 'invoiceId', 'createdAt', 'createdBy', 'status'
+        ])
+        && invoiceId is string
+        && withdrawalId == 'invoice_' + invoiceId
+        && data.amountFils is int
+        && data.amountFils > 0
+        && data.type == 'PURCHASE_INVOICE'
+        && data.createdAt == request.time
+        && data.createdBy == request.auth.uid
+        && data.status == 'ACTIVE'
+        && existsAfter(invoiceRef)
+        && invoice.operationId == invoiceId
+        && invoice.shopCashAmountFils == data.amountFils
+        && invoice.createdBy == request.auth.uid
+        && invoice.status == 'ACTIVE';
+    }
+
+    function validSupplierPaymentWithdrawalCreate(storeId, withdrawalId) {
+      let data = request.resource.data;
+      let paymentId = data.supplierPaymentId;
+      let paymentRef = supplierPaymentPath(storeId, paymentId);
+      let payment = getAfter(paymentRef).data;
+
+      return isFinancialStoreMember(storeId)
+        && hasOnlyKeys(data, [
+          'amountFils', 'type', 'supplierPaymentId', 'createdAt',
+          'createdBy', 'status'
+        ])
+        && paymentId is string
+        && withdrawalId == 'supplierPayment_' + paymentId
+        && data.amountFils is int
+        && data.amountFils > 0
+        && data.type == 'PURCHASE_INVOICE'
+        && data.createdAt == request.time
+        && data.createdBy == request.auth.uid
+        && data.status == 'ACTIVE'
+        && existsAfter(paymentRef)
+        && payment.operationId == paymentId
+        && payment.amountFils == data.amountFils
+        && payment.source == 'SHOP_CASH'
+        && payment.createdBy == request.auth.uid
+        && payment.status == 'ACTIVE';
+    }
+
+    function validCashWithdrawalUpdate(storeId) {
+      let paymentId = resource.data.keys().hasAny(['supplierPaymentId'])
+        ? resource.data.supplierPaymentId : '';
+      let paymentPath = supplierPaymentPath(storeId, paymentId);
+      let paymentBefore = get(paymentPath).data;
+      let paymentAfter = getAfter(paymentPath).data;
+
+      return isAdmin(storeId)
+        && resource.data.type == 'PURCHASE_INVOICE'
+        && resource.data.status == 'ACTIVE'
+        && request.resource.data.status == 'CANCELLED'
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['status'])
+        && resource.data.supplierPaymentId is string
+        && exists(paymentPath)
+        && existsAfter(paymentPath)
+        && paymentBefore.status == 'ACTIVE'
+        && paymentAfter.status == 'CANCELLED'
+        && paymentAfter.cancellationOperationId is string;
+    }
+
+    function validInvoicePhotoMetadataCreate(storeId, invoiceId, photoId) {
+      let invoicePath = purchaseInvoicePath(storeId, invoiceId);
+      let invoice = getAfter(invoicePath).data;
+      let data = request.resource.data;
+
+      return isFinancialStoreMember(storeId)
+        && hasOnlyKeys(data, [
+          'storagePath', 'sortOrder', 'mimeType', 'sizeBytes', 'createdAt'
+        ])
+        && existsAfter(invoicePath)
+        && invoice.status == 'ACTIVE'
+        && photoId in invoice.photoIds
+        && data.storagePath
+          == 'stores/' + storeId + '/purchaseInvoices/' + invoiceId
+            + '/photos/' + photoId + '.jpg'
+        && data.sortOrder is int
+        && data.sortOrder >= 0
+        && data.sortOrder < 3
+        && data.mimeType == 'image/jpeg'
+        && data.sizeBytes is int
+        && data.sizeBytes > 0
+        && data.sizeBytes <= 5242880
+        && data.createdAt == request.time;
     }
 
     function validHistoryData(data) {
@@ -612,6 +1384,23 @@ service cloud.firestore {
         && get(storeUserPath(storeId, request.auth.uid)).data.role == 'ADMIN';
     }
 
+    function isFinancialStoreMember(storeId) {
+      let indexPath = membershipIndexPath(request.auth.uid, storeId);
+      let storeUserRef = storeUserPath(storeId, request.auth.uid);
+      let index = get(indexPath).data;
+      let storeUser = get(storeUserRef).data;
+
+      return isSignedIn()
+        && exists(indexPath)
+        && exists(storeUserRef)
+        && index.storeId == storeId
+        && index.isActive == true
+        && index.role in ['ADMIN', 'EMPLOYEE']
+        && storeUser.uid == request.auth.uid
+        && storeUser.isActive == true
+        && storeUser.role == index.role;
+    }
+
     function isEmployeeManagementAdmin(storeId) {
       return isAdmin(storeId)
         && get(membershipIndexPath(request.auth.uid, storeId)).data.role == 'ADMIN'
@@ -831,6 +1620,55 @@ service cloud.firestore {
         allow delete: if validCompanyNameClaimDelete(
           storeId, normalizedNameKey
         );
+      }
+
+      // ---------- Purchase invoices and supplier balances ----------
+
+      match /purchaseInvoices/{invoiceId} {
+        allow get, list: if isFinancialStoreMember(storeId);
+        allow create: if validInvoiceCreate(storeId, invoiceId);
+        allow update: if validInvoiceCancellation(storeId, invoiceId);
+        allow delete: if false;
+
+        match /photos/{photoId} {
+          allow get, list: if isFinancialStoreMember(storeId);
+          allow create: if validInvoicePhotoMetadataCreate(
+            storeId, invoiceId, photoId
+          );
+          allow update, delete: if false;
+        }
+      }
+
+      match /supplierDebts/{debtId} {
+        allow get, list: if isFinancialStoreMember(storeId);
+        allow create: if validSupplierDebtCreate(storeId, debtId);
+        allow update: if validSupplierDebtUpdate(storeId, debtId);
+        allow delete: if false;
+      }
+
+      match /supplierPayments/{paymentId} {
+        allow get, list: if isFinancialStoreMember(storeId);
+        allow create: if validSupplierPaymentCreate(storeId, paymentId);
+        allow update: if validSupplierPaymentCancellation(storeId, paymentId);
+        allow delete: if false;
+
+      }
+
+      match /cashWithdrawals/{withdrawalId} {
+        allow get, list: if isFinancialStoreMember(storeId);
+        allow create: if validCashWithdrawalCreate(storeId, withdrawalId);
+        allow update: if validCashWithdrawalUpdate(storeId);
+        allow delete: if false;
+      }
+
+      match /operations/{operationId} {
+        allow get: if isFinancialStoreMember(storeId)
+          && (resource.data.createdBy == request.auth.uid
+            || isAdmin(storeId));
+        allow list: if false;
+        allow create: if validOperationCreate(storeId, operationId);
+        allow update: if validOperationCompletion(storeId, operationId);
+        allow delete: if false;
       }
 
       // ---------- Products ----------

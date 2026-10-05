@@ -1193,3 +1193,600 @@ test('company update cannot modify createdAt or add unapproved fields', async ()
     { internalNote: 'not allowed', updatedAt: serverTimestamp() },
   ));
 });
+
+async function startFinancialOperation(db, {
+  operationId,
+  type,
+  invoiceId,
+  paymentId,
+  photoIds,
+  createdBy = 'admin-1',
+}) {
+  await setDoc(doc(db, 'stores', 'store-1', 'operations', operationId), {
+    operationId,
+    type,
+    createdBy,
+    createdAt: serverTimestamp(),
+    status: 'PROCESSING',
+    retryCount: 0,
+    ...(invoiceId === undefined ? {} : { invoiceId }),
+    ...(paymentId === undefined ? {} : { paymentId }),
+    ...(photoIds === undefined ? {} : { photoIds }),
+  });
+}
+
+async function seedFinancialInvoice({
+  storeId = 'store-1',
+  invoiceId = 'invoice-1',
+  companyId = 'company-1',
+  companyName = 'Example Company',
+  totalAmountFils = 10000,
+  shopCashAmountFils = 0,
+  outsideCashAmountFils = 0,
+  supplierDebtAmountFils = 10000,
+  status = 'ACTIVE',
+} = {}) {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(doc(db, 'stores', storeId, 'purchaseInvoices', invoiceId), {
+      companyId,
+      companyName,
+      totalAmountFils,
+      shopCashAmountFils,
+      outsideCashAmountFils,
+      supplierDebtAmountFils,
+      status,
+      createdAt: new Date(),
+      createdBy: 'admin-1',
+      operationId: invoiceId,
+      photoIds: [],
+    });
+    if (supplierDebtAmountFils > 0) {
+      await setDoc(doc(db, 'stores', storeId, 'supplierDebts', invoiceId), {
+        invoiceId,
+        companyId,
+        companyName,
+        originalAmountFils: supplierDebtAmountFils,
+        remainingAmountFils: supplierDebtAmountFils,
+        status: 'OPEN',
+        createdAt: new Date(),
+        createdBy: 'admin-1',
+        operationId: invoiceId,
+        lastOperationId: invoiceId,
+      });
+    }
+    if (shopCashAmountFils > 0) {
+      await setDoc(
+        doc(db, 'stores', storeId, 'cashWithdrawals', `invoice_${invoiceId}`),
+        {
+          amountFils: shopCashAmountFils,
+          type: 'PURCHASE_INVOICE',
+          invoiceId,
+          createdAt: new Date(),
+          createdBy: 'admin-1',
+          status: 'ACTIVE',
+        },
+      );
+    }
+  });
+}
+
+function invoiceCreateBatch(db, {
+  invoiceId = 'invoice-new',
+  companyId = 'company-1',
+  companyName = 'Example Company',
+  totalAmountFils = 10000,
+  shopCashAmountFils = 3000,
+  outsideCashAmountFils = 2000,
+  supplierDebtAmountFils = 5000,
+  photoIds = [],
+  createdBy = 'admin-1',
+  extraFields = {},
+} = {}) {
+  const batch = writeBatch(db);
+  const invoiceRef = doc(db, 'stores', 'store-1', 'purchaseInvoices', invoiceId);
+  batch.set(invoiceRef, {
+    companyId,
+    companyName,
+    totalAmountFils,
+    shopCashAmountFils,
+    outsideCashAmountFils,
+    supplierDebtAmountFils,
+    status: 'ACTIVE',
+    createdAt: serverTimestamp(),
+    createdBy,
+    operationId: invoiceId,
+    photoIds,
+    ...extraFields,
+  });
+  if (supplierDebtAmountFils > 0) {
+    batch.set(doc(db, 'stores', 'store-1', 'supplierDebts', invoiceId), {
+      invoiceId,
+      companyId,
+      companyName,
+      originalAmountFils: supplierDebtAmountFils,
+      remainingAmountFils: supplierDebtAmountFils,
+      status: 'OPEN',
+      createdAt: serverTimestamp(),
+      createdBy,
+      operationId: invoiceId,
+      lastOperationId: invoiceId,
+    });
+  }
+  if (shopCashAmountFils > 0) {
+    batch.set(
+      doc(db, 'stores', 'store-1', 'cashWithdrawals', `invoice_${invoiceId}`),
+      {
+        amountFils: shopCashAmountFils,
+        type: 'PURCHASE_INVOICE',
+        invoiceId,
+        createdAt: serverTimestamp(),
+        createdBy,
+        status: 'ACTIVE',
+      },
+    );
+  }
+  photoIds.forEach((photoId, sortOrder) => {
+    batch.set(
+      doc(
+        db,
+        'stores',
+        'store-1',
+        'purchaseInvoices',
+        invoiceId,
+        'photos',
+        photoId,
+      ),
+      {
+        storagePath:
+          `stores/store-1/purchaseInvoices/${invoiceId}/photos/${photoId}.jpg`,
+        sortOrder,
+        mimeType: 'image/jpeg',
+        sizeBytes: 1024,
+        createdAt: serverTimestamp(),
+      },
+    );
+  });
+  batch.update(doc(db, 'stores', 'store-1', 'operations', invoiceId), {
+    status: 'COMPLETED',
+  });
+  return batch;
+}
+
+function supplierPaymentBatch(db, {
+  paymentId = 'payment-1',
+  allocations,
+  source = 'OUTSIDE_CASH',
+  notes,
+  overrideManifest,
+  overrideAmountFils,
+  addExtraAllocation = false,
+  createdBy = 'admin-1',
+} = {}) {
+  const amountFils = overrideAmountFils ??
+    allocations.reduce((total, allocation) => total + allocation.amountFils, 0);
+  const allocationManifest = overrideManifest ??
+    allocations.map(({ invoiceId, amountFils: allocationAmount }) => ({
+      invoiceId,
+      debtId: invoiceId,
+      amountFils: allocationAmount,
+    }));
+  const allocationAmountsByDebt = Object.fromEntries(
+    allocationManifest.map((entry) => [entry.debtId, entry.amountFils]),
+  );
+  const batch = writeBatch(db);
+  batch.set(doc(db, 'stores', 'store-1', 'supplierPayments', paymentId), {
+    companyId: 'company-1',
+    companyName: 'Example Company',
+    amountFils,
+    source,
+    status: 'ACTIVE',
+    allocationCount: allocationManifest.length,
+    allocatedAmountFils: amountFils,
+    allocationManifest,
+    allocationAmountsByDebt,
+    createdAt: serverTimestamp(),
+    createdBy,
+    operationId: paymentId,
+    ...(notes === undefined ? {} : { notes }),
+  });
+  allocations.forEach((allocation) => {
+    const { invoiceId, amountFils: allocationAmount } = allocation;
+    const previous = allocation.remainingAmountFils ?? 10000;
+    const remainingAmountFils = previous - allocationAmount;
+    batch.update(doc(db, 'stores', 'store-1', 'supplierDebts', invoiceId), {
+      remainingAmountFils,
+      status: remainingAmountFils === 0 ? 'PAID' : 'OPEN',
+      lastOperationId: paymentId,
+    });
+  });
+  if (addExtraAllocation) {
+    batch.set(
+      doc(
+        db,
+        'stores',
+        'store-1',
+        'supplierPayments',
+        paymentId,
+        'allocations',
+        'unlisted-invoice',
+      ),
+      {
+        invoiceId: 'invoice-1',
+        debtId: 'invoice-1',
+        amountFils: 1,
+        createdAt: serverTimestamp(),
+      },
+    );
+  }
+  if (source == 'SHOP_CASH') {
+    batch.set(
+      doc(
+        db,
+        'stores',
+        'store-1',
+        'cashWithdrawals',
+        `supplierPayment_${paymentId}`,
+      ),
+      {
+        amountFils,
+        type: 'PURCHASE_INVOICE',
+        supplierPaymentId: paymentId,
+        createdAt: serverTimestamp(),
+        createdBy,
+        status: 'ACTIVE',
+      },
+    );
+  }
+  batch.update(doc(db, 'stores', 'store-1', 'operations', paymentId), {
+    status: 'COMPLETED',
+  });
+  return batch;
+}
+
+async function seedPaymentForCancellation({
+  paymentId = 'payment-cancel',
+  invoiceIds = ['invoice-1'],
+  allocationAmountFils = 3000,
+  source = 'SHOP_CASH',
+} = {}) {
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  const allocations = invoiceIds.map((invoiceId) => ({
+    invoiceId,
+    amountFils: allocationAmountFils,
+  }));
+  await startFinancialOperation(db, {
+    operationId: paymentId,
+    type: 'CREATE_SUPPLIER_PAYMENT',
+    paymentId,
+  });
+  await assertSucceeds(supplierPaymentBatch(db, {
+    paymentId,
+    allocations,
+    source,
+  }).commit());
+}
+
+test('invoice creation and its shop-cash withdrawal are atomic', async () => {
+  await seedCompany();
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await startFinancialOperation(db, {
+    operationId: 'invoice-new',
+    type: 'CREATE_PURCHASE_INVOICE',
+    invoiceId: 'invoice-new',
+    photoIds: [],
+  });
+  await assertSucceeds(invoiceCreateBatch(db, {
+    shopCashAmountFils: 3000,
+    outsideCashAmountFils: 2000,
+    supplierDebtAmountFils: 5000,
+  }).commit());
+  const invoice = await getDoc(
+    doc(db, 'stores', 'store-1', 'purchaseInvoices', 'invoice-new'),
+  );
+  const debt = await getDoc(
+    doc(db, 'stores', 'store-1', 'supplierDebts', 'invoice-new'),
+  );
+  const withdrawal = await getDoc(
+    doc(db, 'stores', 'store-1', 'cashWithdrawals', 'invoice_invoice-new'),
+  );
+  assert.equal(invoice.data().totalAmountFils, 10000);
+  assert.equal(debt.data().remainingAmountFils, 5000);
+  assert.equal(withdrawal.data().amountFils, 3000);
+});
+
+test('invoice creation rejects invalid splits, inactive companies, and unapproved fields', async () => {
+  await seedCompany({ isActive: false });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await startFinancialOperation(db, {
+    operationId: 'bad-split',
+    type: 'CREATE_PURCHASE_INVOICE',
+    invoiceId: 'bad-split',
+    photoIds: [],
+  });
+  await assertFails(invoiceCreateBatch(db, {
+    invoiceId: 'bad-split',
+    totalAmountFils: 10000,
+    shopCashAmountFils: 3000,
+    outsideCashAmountFils: 2000,
+    supplierDebtAmountFils: 4000,
+  }).commit());
+
+  await startFinancialOperation(db, {
+    operationId: 'inactive-company-invoice',
+    type: 'CREATE_PURCHASE_INVOICE',
+    invoiceId: 'inactive-company-invoice',
+    photoIds: [],
+  });
+  await assertFails(invoiceCreateBatch(db, {
+    invoiceId: 'inactive-company-invoice',
+  }).commit());
+
+  await seedCompany({
+    companyId: 'company-active',
+    name: 'Active Company',
+    isActive: true,
+  });
+  await startFinancialOperation(db, {
+    operationId: 'extra-field-invoice',
+    type: 'CREATE_PURCHASE_INVOICE',
+    invoiceId: 'extra-field-invoice',
+    photoIds: [],
+  });
+  await assertFails(invoiceCreateBatch(db, {
+    invoiceId: 'extra-field-invoice',
+    companyId: 'company-active',
+    companyName: 'Active Company',
+    extraFields: { editable: true },
+  }).commit());
+});
+
+test('employees can create and read invoices but cannot cancel them', async () => {
+  await seedEmployee();
+  await seedCompany();
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await startFinancialOperation(db, {
+    operationId: 'employee-invoice',
+    type: 'CREATE_PURCHASE_INVOICE',
+    invoiceId: 'employee-invoice',
+    photoIds: [],
+    createdBy: 'employee-1',
+  });
+  await assertSucceeds(invoiceCreateBatch(db, {
+    invoiceId: 'employee-invoice',
+    createdBy: 'employee-1',
+  }).commit());
+  await assertSucceeds(getDoc(
+    doc(db, 'stores', 'store-1', 'purchaseInvoices', 'employee-invoice'),
+  ));
+  await assertPermissionDenied(startFinancialOperation(db, {
+    operationId: 'employee-cancel',
+    type: 'CANCEL_PURCHASE_INVOICE',
+    invoiceId: 'employee-invoice',
+    createdBy: 'employee-1',
+  }));
+});
+
+test('invoice photos require matching operation and invoice metadata', async () => {
+  await seedCompany();
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await startFinancialOperation(db, {
+    operationId: 'invoice-with-photo',
+    type: 'CREATE_PURCHASE_INVOICE',
+    invoiceId: 'invoice-with-photo',
+    photoIds: ['photo-1'],
+  });
+  await assertSucceeds(invoiceCreateBatch(db, {
+    invoiceId: 'invoice-with-photo',
+    photoIds: ['photo-1'],
+  }).commit());
+  await assertSucceeds(getDoc(doc(
+    db,
+    'stores',
+    'store-1',
+    'purchaseInvoices',
+    'invoice-with-photo',
+    'photos',
+    'photo-1',
+  )));
+
+  const unmatched = writeBatch(db);
+  unmatched.set(
+    doc(
+      db,
+      'stores',
+      'store-1',
+      'purchaseInvoices',
+      'invoice-with-photo',
+      'photos',
+      'extra-photo',
+    ),
+    {
+      storagePath:
+        'stores/store-1/purchaseInvoices/invoice-with-photo/photos/extra-photo.jpg',
+      sortOrder: 1,
+      mimeType: 'image/jpeg',
+      sizeBytes: 1024,
+      createdAt: serverTimestamp(),
+    },
+  );
+  await assertFails(unmatched.commit());
+});
+
+test('invoice cancellation is Admin-only, preserves history, and does not reverse cash withdrawal', async () => {
+  await seedCompany();
+  await seedFinancialInvoice({
+    invoiceId: 'invoice-cancel',
+    shopCashAmountFils: 2500,
+    supplierDebtAmountFils: 7500,
+    totalAmountFils: 10000,
+  });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await startFinancialOperation(db, {
+    operationId: 'cancel-invoice-op',
+    type: 'CANCEL_PURCHASE_INVOICE',
+    invoiceId: 'invoice-cancel',
+  });
+  const batch = writeBatch(db);
+  batch.update(doc(db, 'stores', 'store-1', 'purchaseInvoices', 'invoice-cancel'), {
+    status: 'CANCELLED',
+    cancelledAt: serverTimestamp(),
+    cancelledBy: 'admin-1',
+    cancellationReason: 'Incorrect invoice',
+    cancellationOperationId: 'cancel-invoice-op',
+  });
+  batch.update(doc(db, 'stores', 'store-1', 'supplierDebts', 'invoice-cancel'), {
+    status: 'CANCELLED',
+    lastOperationId: 'cancel-invoice-op',
+  });
+  batch.update(doc(db, 'stores', 'store-1', 'operations', 'cancel-invoice-op'), {
+    status: 'COMPLETED',
+  });
+  await assertSucceeds(batch.commit());
+  const invoice = await getDoc(
+    doc(db, 'stores', 'store-1', 'purchaseInvoices', 'invoice-cancel'),
+  );
+  const debt = await getDoc(
+    doc(db, 'stores', 'store-1', 'supplierDebts', 'invoice-cancel'),
+  );
+  const withdrawal = await getDoc(
+    doc(db, 'stores', 'store-1', 'cashWithdrawals', 'invoice_invoice-cancel'),
+  );
+  assert.equal(invoice.data().status, 'CANCELLED');
+  assert.equal(debt.data().status, 'CANCELLED');
+  assert.equal(withdrawal.data().status, 'ACTIVE');
+
+  await seedEmployee();
+  const employeeDb = testEnv.authenticatedContext('employee-1').firestore();
+  await assertFails(updateDoc(
+    doc(employeeDb, 'stores', 'store-1', 'purchaseInvoices', 'invoice-cancel'),
+    { status: 'ACTIVE' },
+  ));
+});
+
+test('supplier payment atomically decreases debt and creates one linked withdrawal', async () => {
+  await seedEmployee();
+  await seedCompany();
+  await seedFinancialInvoice({ invoiceId: 'pay-invoice-1' });
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await startFinancialOperation(db, {
+    operationId: 'payment-1',
+    type: 'CREATE_SUPPLIER_PAYMENT',
+    paymentId: 'payment-1',
+  });
+  await assertSucceeds(supplierPaymentBatch(db, {
+    paymentId: 'payment-1',
+    allocations: [{ invoiceId: 'pay-invoice-1', amountFils: 4000 }],
+    source: 'SHOP_CASH',
+  }).commit());
+  const debt = await getDoc(
+    doc(db, 'stores', 'store-1', 'supplierDebts', 'pay-invoice-1'),
+  );
+  const withdrawal = await getDoc(
+    doc(db, 'stores', 'store-1', 'cashWithdrawals', 'supplierPayment_payment-1'),
+  );
+  assert.equal(debt.data().remainingAmountFils, 6000);
+  assert.equal(withdrawal.data().amountFils, 4000);
+});
+
+test('five-slot supplier payment is allowed and mismatched allocations are denied', async () => {
+  await seedCompany();
+  for (let index = 1; index <= 5; index += 1) {
+    await seedFinancialInvoice({
+      invoiceId: `multi-invoice-${index}`,
+      supplierDebtAmountFils: 2000,
+    });
+  }
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await startFinancialOperation(db, {
+    operationId: 'five-slot-payment',
+    type: 'CREATE_SUPPLIER_PAYMENT',
+    paymentId: 'five-slot-payment',
+  });
+  const allocations = Array.from({ length: 5 }, (_, index) => ({
+    invoiceId: `multi-invoice-${index + 1}`,
+    amountFils: 1000,
+    remainingAmountFils: 2000,
+  }));
+  await assertSucceeds(supplierPaymentBatch(db, {
+    paymentId: 'five-slot-payment',
+    allocations,
+    source: 'OUTSIDE_CASH',
+  }).commit());
+
+  await seedFinancialInvoice({ invoiceId: 'invalid-payment-invoice' });
+  await startFinancialOperation(db, {
+    operationId: 'bad-payment',
+    type: 'CREATE_SUPPLIER_PAYMENT',
+    paymentId: 'bad-payment',
+  });
+  await assertFails(supplierPaymentBatch(db, {
+    paymentId: 'bad-payment',
+    allocations: [{ invoiceId: 'invalid-payment-invoice', amountFils: 1000 }],
+    overrideAmountFils: 500,
+    source: 'OUTSIDE_CASH',
+  }).commit());
+});
+
+test('payment cannot overpay, duplicate an allocation, or create an unpaired withdrawal', async () => {
+  await seedCompany();
+  await seedFinancialInvoice({ invoiceId: 'overpay-invoice', supplierDebtAmountFils: 1000 });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await startFinancialOperation(db, {
+    operationId: 'overpayment',
+    type: 'CREATE_SUPPLIER_PAYMENT',
+    paymentId: 'overpayment',
+  });
+  await assertFails(supplierPaymentBatch(db, {
+    paymentId: 'overpayment',
+    allocations: [{
+      invoiceId: 'overpay-invoice',
+      amountFils: 1500,
+      remainingAmountFils: 1000,
+    }],
+    source: 'OUTSIDE_CASH',
+  }).commit());
+
+  await startFinancialOperation(db, {
+    operationId: 'duplicate-allocation',
+    type: 'CREATE_SUPPLIER_PAYMENT',
+    paymentId: 'duplicate-allocation',
+  });
+  await assertFails(supplierPaymentBatch(db, {
+    paymentId: 'duplicate-allocation',
+    allocations: [
+      { invoiceId: 'overpay-invoice', amountFils: 200 },
+      { invoiceId: 'overpay-invoice', amountFils: 200 },
+    ],
+    source: 'OUTSIDE_CASH',
+  }).commit());
+
+  await assertFails(setDoc(
+    doc(db, 'stores', 'store-1', 'cashWithdrawals', 'manual-invoice-withdrawal'),
+    {
+      amountFils: 1000,
+      type: 'PURCHASE_INVOICE',
+      invoiceId: 'overpay-invoice',
+      createdAt: serverTimestamp(),
+      createdBy: 'admin-1',
+      status: 'ACTIVE',
+    },
+  ));
+});
+
+test('only members can read financial records and cross-store reads are denied', async () => {
+  await seedEmployee();
+  await seedCompany();
+  await seedFinancialInvoice();
+  const employeeDb = testEnv.authenticatedContext('employee-1').firestore();
+  await assertSucceeds(getDocs(
+    collection(employeeDb, 'stores', 'store-1', 'purchaseInvoices'),
+  ));
+  await assertFails(getDocs(
+    collection(employeeDb, 'stores', 'store-2', 'purchaseInvoices'),
+  ));
+  const unauthenticatedDb = testEnv.unauthenticatedContext().firestore();
+  await assertFails(getDocs(
+    collection(unauthenticatedDb, 'stores', 'store-1', 'supplierDebts'),
+  ));
+});
