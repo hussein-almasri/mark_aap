@@ -3,8 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../core/utils/join_code.dart';
 
 abstract interface class EmployeeJoinCodeLookup {
-  Future<String?> findStoreIdForClaim(String normalizedCode);
-  Future<bool> storeExists(String storeId);
+  Future<bool> claimExists(String normalizedCode);
 }
 
 class FirestoreEmployeeJoinCodeLookup implements EmployeeJoinCodeLookup {
@@ -14,27 +13,21 @@ class FirestoreEmployeeJoinCodeLookup implements EmployeeJoinCodeLookup {
   final FirebaseFirestore _firestore;
 
   @override
-  Future<String?> findStoreIdForClaim(String normalizedCode) async {
+  Future<bool> claimExists(String normalizedCode) async {
     final snapshot = await _firestore
         .collection('storeJoinCodes')
         .doc(normalizedCode)
         .get();
-    if (!snapshot.exists) return null;
-    return snapshot.data()?['storeId'] as String?;
+    return snapshot.exists;
   }
-
-  @override
-  Future<bool> storeExists(String storeId) async =>
-      (await _firestore.collection('stores').doc(storeId).get()).exists;
 }
 
-enum EmployeeJoinCodeStatus { valid, invalidCode, missingStore }
+enum EmployeeJoinCodeStatus { valid, invalidCode }
 
 class EmployeeJoinCodeResult {
-  const EmployeeJoinCodeResult(this.status, {this.storeId});
+  const EmployeeJoinCodeResult(this.status);
 
   final EmployeeJoinCodeStatus status;
-  final String? storeId;
 }
 
 class EmployeeJoinCodeValidator {
@@ -49,18 +42,10 @@ class EmployeeJoinCodeValidator {
     }
 
     final normalizedCode = JoinCode.normalize(rawCode);
-    final storeId = await _lookup.findStoreIdForClaim(normalizedCode);
-    if (storeId == null || storeId.isEmpty) {
+    if (!await _lookup.claimExists(normalizedCode)) {
       return const EmployeeJoinCodeResult(EmployeeJoinCodeStatus.invalidCode);
     }
 
-    if (!await _lookup.storeExists(storeId)) {
-      return const EmployeeJoinCodeResult(EmployeeJoinCodeStatus.missingStore);
-    }
-
-    return EmployeeJoinCodeResult(
-      EmployeeJoinCodeStatus.valid,
-      storeId: storeId,
-    );
+    return const EmployeeJoinCodeResult(EmployeeJoinCodeStatus.valid);
   }
 }

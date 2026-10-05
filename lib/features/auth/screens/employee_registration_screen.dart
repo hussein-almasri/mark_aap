@@ -64,9 +64,6 @@ class _EmployeeRegistrationScreenState
         case EmployeeJoinCodeStatus.invalidCode:
           _showMessage('كود الانضمام غير صحيح', isError: true);
           break;
-        case EmployeeJoinCodeStatus.missingStore:
-          _showMessage('المتجر المرتبط بكود الانضمام غير متاح', isError: true);
-          break;
         case EmployeeJoinCodeStatus.valid:
           _showMessage('كود الانضمام صالح. ستتوفر متابعة التسجيل لاحقًا.');
           setState(() => _isJoinCodeValid = true);

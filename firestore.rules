@@ -373,7 +373,7 @@ service cloud.firestore {
     // Join-code claims are opaque lookup documents. Clients may check one
     // exact code but cannot enumerate the collection or edit an existing claim.
     match /storeJoinCodes/{codeId} {
-      allow get: if isSignedIn();
+      allow get: if true;
       allow list: if false;
       allow create: if validJoinCodeClaimCreate(codeId);
       allow update: if false;
