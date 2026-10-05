@@ -325,10 +325,12 @@ function companyCreateBatch(db, {
   claimCompanyId = companyId,
   claimName = name.trim().toLowerCase(),
   claimKey = companyNameKey(name),
+  extraFields = {},
 } = {}) {
   const batch = writeBatch(db);
   const companyData = {
     name: name.trim(),
+    ...extraFields,
     ...(phone === undefined ? {} : { phone }),
     isActive,
     createdAt: serverTimestamp(),
@@ -1172,15 +1174,11 @@ test('company create rejects invalid fields, names, statuses, and timestamps', a
     { companyId: 'bad-timestamp', normalizedName: 'bad timestamp' },
   );
   await assertFails(badTimestampBatch.commit());
-  const extraFieldBatch = companyCreateBatch(db, {
+  await assertFails(companyCreateBatch(db, {
     companyId: 'extra-field',
     name: 'Extra Field',
-  });
-  extraFieldBatch.update(
-    doc(db, 'stores', 'store-1', 'companies', 'extra-field'),
-    { forbidden: true },
-  );
-  await assertFails(extraFieldBatch.commit());
+    extraFields: { forbidden: true },
+  }).commit());
 });
 
 test('company update cannot modify createdAt or add unapproved fields', async () => {
