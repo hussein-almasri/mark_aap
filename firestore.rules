@@ -417,6 +417,77 @@ service cloud.firestore {
         && get(storeUserPath(storeId, request.auth.uid)).data.role == 'ADMIN';
     }
 
+    function isEmployeeManagementAdmin(storeId) {
+      return isAdmin(storeId)
+        && get(membershipIndexPath(request.auth.uid, storeId)).data.role == 'ADMIN'
+        && get(storePath(storeId)).data.ownerUid == request.auth.uid;
+    }
+
+    function validStoreEmployeeStatusUpdate(storeId, uid) {
+      let indexPath = membershipIndexPath(uid, storeId);
+      let indexBefore = get(indexPath).data;
+      let indexAfter = getAfter(indexPath).data;
+
+      return isEmployeeManagementAdmin(storeId)
+        && uid != get(storePath(storeId)).data.ownerUid
+        && resource.data.uid == uid
+        && resource.data.role == 'EMPLOYEE'
+        && resource.data.isActive is bool
+        && request.resource.data.uid == uid
+        && request.resource.data.role == 'EMPLOYEE'
+        && request.resource.data.isActive is bool
+        && request.resource.data.isActive != resource.data.isActive
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['isActive'])
+        && exists(indexPath)
+        && indexBefore.storeId == storeId
+        && indexBefore.role == 'EMPLOYEE'
+        && indexBefore.isActive is bool
+        && indexAfter.storeId == storeId
+        && indexAfter.role == 'EMPLOYEE'
+        && indexAfter.isActive is bool
+        && indexAfter.isActive == request.resource.data.isActive
+        && indexBefore.isActive != indexAfter.isActive;
+    }
+
+    function validEmployeeIndexStatusUpdate(uid, storeId) {
+      let storeMembershipPath = storeUserPath(storeId, uid);
+      let storeMembershipBefore = get(storeMembershipPath).data;
+      let storeMembershipAfter = getAfter(storeMembershipPath).data;
+
+      return isEmployeeManagementAdmin(storeId)
+        && uid != get(storePath(storeId)).data.ownerUid
+        && resource.data.storeId == storeId
+        && resource.data.role == 'EMPLOYEE'
+        && resource.data.isActive is bool
+        && request.resource.data.storeId == storeId
+        && request.resource.data.role == 'EMPLOYEE'
+        && request.resource.data.isActive is bool
+        && request.resource.data.isActive != resource.data.isActive
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['isActive'])
+        && exists(storeMembershipPath)
+        && storeMembershipBefore.uid == uid
+        && storeMembershipBefore.role == 'EMPLOYEE'
+        && storeMembershipBefore.isActive is bool
+        && storeMembershipAfter.uid == uid
+        && storeMembershipAfter.role == 'EMPLOYEE'
+        && storeMembershipAfter.isActive is bool
+        && storeMembershipAfter.isActive == request.resource.data.isActive
+        && storeMembershipBefore.isActive != storeMembershipAfter.isActive;
+    }
+
+    function isSameStoreEmployeeProfileRead(uid) {
+      let storeId = resource.data.storeId;
+      let membershipPath = storeUserPath(storeId, uid);
+
+      return storeId is string
+        && isEmployeeManagementAdmin(storeId)
+        && exists(membershipPath)
+        && get(membershipPath).data.uid == uid
+        && get(membershipPath).data.role == 'EMPLOYEE';
+    }
+
     // Join-code claims are opaque lookup documents. Clients may check one
     // exact code but cannot enumerate the collection or edit an existing claim.
     match /storeJoinCodes/{codeId} {
@@ -430,9 +501,11 @@ service cloud.firestore {
     // ---------- Global user ----------
 
     match /users/{uid} {
-      // A user can read only their own account document.
+      // Users read their own account; a store owner Admin may read only
+      // profiles of employees whose profile and store membership match.
       allow get: if isSignedIn()
-        && request.auth.uid == uid;
+        && (request.auth.uid == uid
+          || isSameStoreEmployeeProfileRead(uid));
 
       allow list: if false;
 
@@ -474,7 +547,8 @@ service cloud.firestore {
         allow create: if (storeId == request.auth.uid
             && isValidInitialSetup(uid))
           || validEmployeeRegistration(uid, storeId);
-        allow update, delete: if false;
+        allow update: if validEmployeeIndexStatusUpdate(uid, storeId);
+        allow delete: if false;
       }
     }
 
@@ -511,17 +585,25 @@ service cloud.firestore {
       // ---------- Store memberships ----------
 
       match /users/{uid} {
-        // Members may read membership records.
-        allow get: if isStoreMember(storeId);
+        // Employees may read only their own membership, even while inactive.
+        // The store owner Admin may read employee memberships in this store.
+        allow get: if isSignedIn()
+          && ((request.auth.uid == uid)
+            || (isEmployeeManagementAdmin(storeId)
+              && resource.data.uid == uid
+              && resource.data.role == 'EMPLOYEE'));
 
-        allow list: if false;
+        // The query must constrain results to employee memberships.
+        allow list: if isEmployeeManagementAdmin(storeId)
+          && resource.data.role == 'EMPLOYEE';
 
         // Allow only the membership created together with initial setup.
         allow create: if (storeId == request.auth.uid
             && uid == request.auth.uid
             && isValidInitialSetup(uid))
           || validEmployeeRegistration(uid, storeId);
-        allow update, delete: if false;
+        allow update: if validStoreEmployeeStatusUpdate(storeId, uid);
+        allow delete: if false;
       }
 
       // ---------- Products ----------

@@ -14,10 +14,12 @@ import {
   doc,
   getDoc,
   getDocs,
+  query,
   runTransaction,
   serverTimestamp,
   setDoc,
   updateDoc,
+  where,
   writeBatch,
 } from 'firebase/firestore';
 
@@ -66,6 +68,24 @@ beforeEach(async () => {
     });
     await setDoc(doc(db, 'stores', 'store-1', 'users', 'admin-1'), {
       uid: 'admin-1',
+      role: 'ADMIN',
+      isActive: true,
+    });
+    await setDoc(doc(db, 'stores', 'store-2'), {
+      name: 'Other store',
+      ownerUid: 'admin-2',
+      joinCode: 'EEEE-FFFF-GGGG-HHHH',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await setDoc(doc(db, 'users', 'admin-2'), { uid: 'admin-2' });
+    await setDoc(doc(db, 'users', 'admin-2', 'memberships', 'store-2'), {
+      storeId: 'store-2',
+      role: 'ADMIN',
+      isActive: true,
+    });
+    await setDoc(doc(db, 'stores', 'store-2', 'users', 'admin-2'), {
+      uid: 'admin-2',
       role: 'ADMIN',
       isActive: true,
     });
@@ -235,6 +255,71 @@ async function employeeBatch(db, {
   await batch.commit();
 }
 
+async function seedEmployee({
+  uid = 'employee-1',
+  storeId = 'store-1',
+  storeActive = true,
+  indexActive = storeActive,
+  role = 'EMPLOYEE',
+} = {}) {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(doc(db, 'users', uid), {
+      uid,
+      email: `${uid}@example.com`,
+      displayName: 'Example Employee',
+      storeId,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await setDoc(doc(db, 'users', uid, 'memberships', storeId), {
+      storeId,
+      role,
+      isActive: indexActive,
+      joinCodeId: employeeCodeId,
+    });
+    await setDoc(doc(db, 'stores', storeId, 'users', uid), {
+      uid,
+      role,
+      isActive: storeActive,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+  });
+}
+
+async function assertPermissionDenied(operation) {
+  await assert.rejects(operation, (error) => error.code === 'permission-denied');
+}
+
+async function assertEmployeeStatus({ uid = 'employee-1', storeId = 'store-1', isActive }) {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    const [storeMembership, indexMembership] = await Promise.all([
+      getDoc(doc(db, 'stores', storeId, 'users', uid)),
+      getDoc(doc(db, 'users', uid, 'memberships', storeId)),
+    ]);
+    assert.equal(storeMembership.data().isActive, isActive);
+    assert.equal(indexMembership.data().isActive, isActive);
+  });
+}
+
+function employeeStatusBatch(db, {
+  uid = 'employee-1',
+  storeId = 'store-1',
+  storeActive,
+  indexActive = storeActive,
+}) {
+  const batch = writeBatch(db);
+  batch.update(doc(db, 'stores', storeId, 'users', uid), {
+    isActive: storeActive,
+  });
+  batch.update(doc(db, 'users', uid, 'memberships', storeId), {
+    isActive: indexActive,
+  });
+  return batch;
+}
+
 test('employee can atomically create the three documents for the claim store', async () => {
   const db = testEnv.authenticatedContext('employee-1', {
     email: 'employee@example.com',
@@ -370,4 +455,229 @@ test('multiple employees can use the same active Join Code', async () => {
     email: 'employee-b@example.com',
     profileStoreId: 'store-1',
   }));
+});
+
+test('store owner Admin can query employee memberships by role', async () => {
+  await seedEmployee();
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  const result = await assertSucceeds(getDocs(query(
+    collection(db, 'stores', 'store-1', 'users'),
+    where('role', '==', 'EMPLOYEE'),
+  )));
+  assert.equal(result.size, 1);
+  assert.equal(result.docs[0].id, 'employee-1');
+});
+
+test('employee cannot list store employees', async () => {
+  await seedEmployee();
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await assertPermissionDenied(getDocs(query(
+    collection(db, 'stores', 'store-1', 'users'),
+    where('role', '==', 'EMPLOYEE'),
+  )));
+});
+
+test('non-Admin cannot list store employees', async () => {
+  await seedEmployee({ uid: 'staff-1' });
+  const db = testEnv.authenticatedContext('staff-1').firestore();
+  await assertPermissionDenied(getDocs(query(
+    collection(db, 'stores', 'store-1', 'users'),
+    where('role', '==', 'EMPLOYEE'),
+  )));
+});
+
+test('Admin of Store A cannot list Store B employees', async () => {
+  await seedEmployee({ uid: 'employee-2', storeId: 'store-2' });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertPermissionDenied(getDocs(query(
+    collection(db, 'stores', 'store-2', 'users'),
+    where('role', '==', 'EMPLOYEE'),
+  )));
+});
+
+test('same-store Admin can read an active employee membership', async () => {
+  await seedEmployee();
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  const result = await assertSucceeds(getDoc(
+    doc(db, 'stores', 'store-1', 'users', 'employee-1'),
+  ));
+  assert.equal(result.data().role, 'EMPLOYEE');
+  assert.equal(result.data().isActive, true);
+});
+
+test('same-store Admin can read an inactive employee membership', async () => {
+  await seedEmployee({ storeActive: false });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  const result = await assertSucceeds(getDoc(
+    doc(db, 'stores', 'store-1', 'users', 'employee-1'),
+  ));
+  assert.equal(result.data().isActive, false);
+});
+
+test('same-store Admin can read an employee global profile', async () => {
+  await seedEmployee();
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  const result = await assertSucceeds(getDoc(doc(db, 'users', 'employee-1')));
+  assert.equal(result.data().displayName, 'Example Employee');
+});
+
+test('Admin cannot read an unrelated global user profile', async () => {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), 'users', 'unrelated-user'), {
+      uid: 'unrelated-user',
+      storeId: 'store-1',
+      displayName: 'Unrelated User',
+    });
+  });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertPermissionDenied(getDoc(doc(db, 'users', 'unrelated-user')));
+});
+
+test('inactive employee can read their own membership state', async () => {
+  await seedEmployee({ storeActive: false });
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  const index = await assertSucceeds(getDoc(
+    doc(db, 'users', 'employee-1', 'memberships', 'store-1'),
+  ));
+  const storeMembership = await assertSucceeds(getDoc(
+    doc(db, 'stores', 'store-1', 'users', 'employee-1'),
+  ));
+  assert.equal(index.data().isActive, false);
+  assert.equal(storeMembership.data().isActive, false);
+});
+
+test('inactive employee cannot read protected store or product data', async () => {
+  await seedEmployee({ storeActive: false });
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(
+      doc(context.firestore(), 'stores', 'store-1', 'products', 'product-1'),
+      { name: 'Protected product' },
+    );
+  });
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await assertPermissionDenied(getDoc(doc(db, 'stores', 'store-1')));
+  await assertPermissionDenied(getDoc(
+    doc(db, 'stores', 'store-1', 'products', 'product-1'),
+  ));
+});
+
+test('Admin can atomically deactivate an employee in both memberships', async () => {
+  await seedEmployee();
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertSucceeds(employeeStatusBatch(db, { storeActive: false }).commit());
+  await assertEmployeeStatus({ isActive: false });
+});
+
+test('Admin can atomically reactivate an employee in both memberships', async () => {
+  await seedEmployee({ storeActive: false });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertSucceeds(employeeStatusBatch(db, { storeActive: true }).commit());
+  await assertEmployeeStatus({ isActive: true });
+});
+
+test('employee cannot change their own isActive status', async () => {
+  await seedEmployee();
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await assertPermissionDenied(updateDoc(
+    doc(db, 'stores', 'store-1', 'users', 'employee-1'),
+    { isActive: false },
+  ));
+  await assertPermissionDenied(updateDoc(
+    doc(db, 'users', 'employee-1', 'memberships', 'store-1'),
+    { isActive: false },
+  ));
+});
+
+test('employee cannot change their own role', async () => {
+  await seedEmployee();
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await assertPermissionDenied(updateDoc(
+    doc(db, 'stores', 'store-1', 'users', 'employee-1'),
+    { role: 'ADMIN' },
+  ));
+  await assertPermissionDenied(updateDoc(
+    doc(db, 'users', 'employee-1', 'memberships', 'store-1'),
+    { role: 'ADMIN' },
+  ));
+});
+
+test('employee cannot change another employee membership', async () => {
+  await seedEmployee({ uid: 'employee-2' });
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await assertPermissionDenied(updateDoc(
+    doc(db, 'stores', 'store-1', 'users', 'employee-2'),
+    { isActive: false },
+  ));
+});
+
+test('Admin cannot change an employee role to ADMIN', async () => {
+  await seedEmployee();
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertPermissionDenied(updateDoc(
+    doc(db, 'stores', 'store-1', 'users', 'employee-1'),
+    { role: 'ADMIN' },
+  ));
+});
+
+test('Admin cannot deactivate or reactivate the store owner membership', async () => {
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertPermissionDenied(employeeStatusBatch(db, {
+    uid: 'admin-1',
+    storeActive: false,
+  }).commit());
+  await seedEmployee({
+    uid: 'admin-1',
+    role: 'ADMIN',
+    storeActive: false,
+  });
+  await assertPermissionDenied(employeeStatusBatch(db, {
+    uid: 'admin-1',
+    storeActive: true,
+  }).commit());
+});
+
+test('updating only the store employee membership is denied', async () => {
+  await seedEmployee();
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertPermissionDenied(updateDoc(
+    doc(db, 'stores', 'store-1', 'users', 'employee-1'),
+    { isActive: false },
+  ));
+});
+
+test('updating only the employee membership index is denied', async () => {
+  await seedEmployee();
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertPermissionDenied(updateDoc(
+    doc(db, 'users', 'employee-1', 'memberships', 'store-1'),
+    { isActive: false },
+  ));
+});
+
+test('batch with different employee membership statuses is denied', async () => {
+  await seedEmployee({ storeActive: true, indexActive: false });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertPermissionDenied(employeeStatusBatch(db, {
+    storeActive: false,
+    indexActive: true,
+  }).commit());
+});
+
+test('batch that does not change the counterpart status is denied', async () => {
+  await seedEmployee({ storeActive: true, indexActive: false });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertPermissionDenied(employeeStatusBatch(db, {
+    storeActive: false,
+    indexActive: false,
+  }).commit());
+});
+
+test('cross-store Admin cannot update an employee membership', async () => {
+  await seedEmployee({ uid: 'employee-2', storeId: 'store-2' });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertPermissionDenied(employeeStatusBatch(db, {
+    uid: 'employee-2',
+    storeId: 'store-2',
+    storeActive: false,
+  }).commit());
 });
