@@ -18,9 +18,7 @@ class AdminDashboard extends StatelessWidget {
       children: [
         Card(
           child: ListTile(
-            leading: const CircleAvatar(
-              child: Icon(Icons.people_alt_outlined),
-            ),
+            leading: const CircleAvatar(child: Icon(Icons.people_alt_outlined)),
             title: const Text('إدارة الموظفين'),
             subtitle: const Text('عرض حالة الموظفين وإدارتها'),
             trailing: const Icon(Icons.chevron_right),
