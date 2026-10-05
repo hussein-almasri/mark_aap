@@ -64,7 +64,7 @@ class CompanyRepository {
       final timestamp = FieldValue.serverTimestamp();
       transaction.set(companyRef, {
         'name': cleanName,
-        if (cleanPhone != null) 'phone': cleanPhone,
+        'phone': ?cleanPhone,
         'isActive': true,
         'createdAt': timestamp,
         'updatedAt': timestamp,

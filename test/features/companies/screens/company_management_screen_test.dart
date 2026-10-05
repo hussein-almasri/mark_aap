@@ -208,11 +208,8 @@ void main() {
 
     await tester.tap(find.text('إضافة شركة'));
     await tester.pumpAndSettle();
-    await tester.enterText(find.byLabelText('اسم الشركة'), 'New Supplier');
-    await tester.enterText(
-      find.byLabelText('رقم الهاتف (اختياري)'),
-      '+1 555 0200',
-    );
+    await tester.enterText(find.byType(TextFormField).at(0), 'New Supplier');
+    await tester.enterText(find.byType(TextFormField).at(1), '+1 555 0200');
     await tester.tap(find.widgetWithText(FilledButton, 'حفظ'));
     await tester.pumpAndSettle();
 
@@ -223,8 +220,11 @@ void main() {
 
     await tester.tap(find.widgetWithText(OutlinedButton, 'تعديل').first);
     await tester.pumpAndSettle();
-    await tester.enterText(find.byLabelText('اسم الشركة'), 'Updated Supplier');
-    await tester.enterText(find.byLabelText('رقم الهاتف (اختياري)'), '');
+    await tester.enterText(
+      find.byType(TextFormField).at(0),
+      'Updated Supplier',
+    );
+    await tester.enterText(find.byType(TextFormField).at(1), '');
     await tester.tap(find.widgetWithText(FilledButton, 'حفظ'));
     await tester.pumpAndSettle();
 

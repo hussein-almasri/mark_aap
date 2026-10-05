@@ -25,6 +25,13 @@ class CompanyModel {
       throw StateError('Company document is empty.');
     }
 
+    return CompanyModel.fromData(companyId: document.id, data: data);
+  }
+
+  factory CompanyModel.fromData({
+    required String companyId,
+    required Map<String, dynamic> data,
+  }) {
     final name = data['name'];
     final isActive = data['isActive'];
     final phone = data['phone'];
@@ -35,7 +42,7 @@ class CompanyModel {
     }
 
     return CompanyModel(
-      companyId: document.id,
+      companyId: companyId,
       name: name,
       phone: phone as String?,
       isActive: isActive,
