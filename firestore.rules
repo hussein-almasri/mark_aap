@@ -76,8 +76,179 @@ service cloud.firestore {
       return /databases/$(database)/documents/stores/$(storeId)/productBarcodeKeys/$(productBarcodeKey(barcode));
     }
 
+    function normalizedCompanyName(name) {
+      return name.trim().lower();
+    }
+
+    function companyNameKey(name) {
+      return 'c_' + normalizedCompanyName(name).toUtf8().toBase64()
+        .replace('/', '_').replace('[+]', '-').replace('=', '');
+    }
+
+    function companyNameKeyPath(storeId, name) {
+      return /databases/$(database)/documents/stores/$(storeId)/companyNameKeys/$(companyNameKey(name));
+    }
+
+    function companyPath(storeId, companyId) {
+      return /databases/$(database)/documents/stores/$(storeId)/companies/$(companyId);
+    }
+
     function hasOnlyKeys(data, keys) {
       return data.keys().hasAll(keys) && data.keys().hasOnly(keys);
+    }
+
+    function validCompanyData(data) {
+      return data.keys().hasAll([
+          'name', 'isActive', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'name', 'phone', 'isActive', 'createdAt', 'updatedAt'
+        ])
+        && data.name is string
+        && data.name == data.name.trim()
+        && data.name.matches('.*\\S.*')
+        && data.name.size() <= 120
+        && (!data.keys().hasAny(['phone']) || data.phone is string)
+        && data.isActive is bool;
+    }
+
+    function companyClaimMatches(claim, companyId, name) {
+      return claim.companyId == companyId
+        && claim.normalizedName == normalizedCompanyName(name);
+    }
+
+    function companyClaimExistsAfter(storeId, companyId, name) {
+      let claimPath = companyNameKeyPath(storeId, name);
+      let claim = getAfter(claimPath).data;
+
+      return existsAfter(claimPath)
+        && companyClaimMatches(claim, companyId, name);
+    }
+
+    function validCompanyCreate(storeId, companyId) {
+      let data = request.resource.data;
+
+      return isAdmin(storeId)
+        && validCompanyData(data)
+        && data.isActive == true
+        && data.createdAt == request.time
+        && data.updatedAt == request.time
+        && companyClaimExistsAfter(storeId, companyId, data.name);
+    }
+
+    function validCompanyRename(storeId, companyId) {
+      let oldName = resource.data.name;
+      let newName = request.resource.data.name;
+      let oldClaimPath = companyNameKeyPath(storeId, oldName);
+      let oldClaim = get(oldClaimPath).data;
+
+      return normalizedCompanyName(oldName) != normalizedCompanyName(newName)
+        && exists(oldClaimPath)
+        && companyClaimMatches(oldClaim, companyId, oldName)
+        && !existsAfter(oldClaimPath)
+        && companyClaimExistsAfter(storeId, companyId, newName);
+    }
+
+    function validCompanyClaimPreserved(storeId, companyId, name) {
+      let claimPath = companyNameKeyPath(storeId, name);
+      let claim = get(claimPath).data;
+      let claimAfter = getAfter(claimPath).data;
+
+      return exists(claimPath)
+        && companyClaimMatches(claim, companyId, name)
+        && existsAfter(claimPath)
+        && companyClaimMatches(claimAfter, companyId, name);
+    }
+
+    function validCompanyUpdate(storeId, companyId) {
+      let oldName = resource.data.name;
+      let newName = request.resource.data.name;
+
+      return isAdmin(storeId)
+        && validCompanyData(request.resource.data)
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['name', 'phone', 'isActive', 'updatedAt'])
+        && request.resource.data.updatedAt == request.time
+        && (normalizedCompanyName(oldName) == normalizedCompanyName(newName)
+          ? validCompanyClaimPreserved(storeId, companyId, oldName)
+          : validCompanyRename(storeId, companyId));
+    }
+
+    function validCompanyClaimCreateForNewCompany(storeId, companyId) {
+      let companyRef = companyPath(storeId, companyId);
+      let company = getAfter(companyRef).data;
+
+      return !exists(companyRef)
+        && existsAfter(companyRef)
+        && validCompanyData(company)
+        && company.isActive == true
+        && company.createdAt == request.time
+        && company.updatedAt == request.time
+        && companyClaimMatches(request.resource.data, companyId, company.name);
+    }
+
+    function validCompanyClaimCreateForRename(storeId, companyId) {
+      let companyRef = companyPath(storeId, companyId);
+      let companyBefore = get(companyRef).data;
+      let companyAfter = getAfter(companyRef).data;
+      let oldClaimPath = companyNameKeyPath(storeId, companyBefore.name);
+      let oldClaim = get(oldClaimPath).data;
+
+      return exists(companyRef)
+        && existsAfter(companyRef)
+        && validCompanyData(companyAfter)
+        && companyAfter.updatedAt == request.time
+        && normalizedCompanyName(companyBefore.name)
+          != normalizedCompanyName(companyAfter.name)
+        && exists(oldClaimPath)
+        && companyClaimMatches(oldClaim, companyId, companyBefore.name)
+        && !existsAfter(oldClaimPath)
+        && companyClaimMatches(
+          request.resource.data, companyId, companyAfter.name
+        );
+    }
+
+    function validCompanyNameClaimCreate(storeId, key) {
+      return isAdmin(storeId)
+        && hasOnlyKeys(request.resource.data, ['companyId', 'normalizedName'])
+        && request.resource.data.companyId is string
+        && request.resource.data.normalizedName is string
+        && request.resource.data.normalizedName
+          == normalizedCompanyName(request.resource.data.normalizedName)
+        && key == companyNameKey(request.resource.data.normalizedName)
+        && (validCompanyClaimCreateForNewCompany(
+              storeId, request.resource.data.companyId
+            )
+          || validCompanyClaimCreateForRename(
+              storeId, request.resource.data.companyId
+            ));
+    }
+
+    function validCompanyNameClaimDelete(storeId, key) {
+      let companyId = resource.data.companyId;
+      let companyRef = companyPath(storeId, companyId);
+      let companyBefore = get(companyRef).data;
+      let companyAfter = getAfter(companyRef).data;
+      let oldName = resource.data.normalizedName;
+      let newClaimPath = companyNameKeyPath(storeId, companyAfter.name);
+      let newClaim = getAfter(newClaimPath).data;
+
+      return isAdmin(storeId)
+        && resource.data.keys().hasAll(['companyId', 'normalizedName'])
+        && resource.data.keys().hasOnly(['companyId', 'normalizedName'])
+        && companyId is string
+        && oldName is string
+        && oldName == normalizedCompanyName(oldName)
+        && key == companyNameKey(oldName)
+        && exists(companyRef)
+        && existsAfter(companyRef)
+        && normalizedCompanyName(companyBefore.name) == oldName
+        && normalizedCompanyName(companyAfter.name) != oldName
+        && validCompanyData(companyAfter)
+        && companyAfter.updatedAt == request.time
+        && existsAfter(newClaimPath)
+        && companyClaimMatches(newClaim, companyId, companyAfter.name);
     }
 
     function validHistoryData(data) {
@@ -604,6 +775,38 @@ service cloud.firestore {
           || validEmployeeRegistration(uid, storeId);
         allow update: if validStoreEmployeeStatusUpdate(storeId, uid);
         allow delete: if false;
+      }
+
+      // ---------- Companies ----------
+
+      match /companies/{companyId} {
+        allow get: if isAdmin(storeId)
+          || (isStoreMember(storeId)
+            && get(storeUserPath(storeId, request.auth.uid)).data.role
+              == 'EMPLOYEE'
+            && resource.data.isActive == true);
+
+        allow list: if isAdmin(storeId)
+          || (isStoreMember(storeId)
+            && get(storeUserPath(storeId, request.auth.uid)).data.role
+              == 'EMPLOYEE'
+            && resource.data.isActive == true);
+
+        allow create: if validCompanyCreate(storeId, companyId);
+        allow update: if validCompanyUpdate(storeId, companyId);
+        allow delete: if false;
+      }
+
+      match /companyNameKeys/{normalizedNameKey} {
+        allow get: if isAdmin(storeId);
+        allow list: if false;
+        allow create: if validCompanyNameClaimCreate(
+          storeId, normalizedNameKey
+        );
+        allow update: if false;
+        allow delete: if validCompanyNameClaimDelete(
+          storeId, normalizedNameKey
+        );
       }
 
       // ---------- Products ----------

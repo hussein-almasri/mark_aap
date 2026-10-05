@@ -31,6 +31,8 @@ const oldCodeId = oldCode.replaceAll('-', '').toLowerCase();
 const newCodeId = newCode.replaceAll('-', '').toLowerCase();
 const employeeCodeId = oldCodeId;
 const otherStoreCodeId = 'aaaaaaaabbbbbbbb';
+const companyNameKey = (name) =>
+  `c_${Buffer.from(name.trim().toLowerCase(), 'utf8').toString('base64url')}`;
 let testEnv;
 
 before(async () => {
@@ -286,6 +288,71 @@ async function seedEmployee({
       updatedAt: new Date(),
     });
   });
+}
+
+async function seedCompany({
+  companyId = 'company-1',
+  storeId = 'store-1',
+  name = 'Example Company',
+  phone = '+1 555 0100',
+  isActive = true,
+} = {}) {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(doc(db, 'stores', storeId, 'companies', companyId), {
+      name,
+      phone,
+      isActive,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await setDoc(
+      doc(db, 'stores', storeId, 'companyNameKeys', companyNameKey(name)),
+      {
+        companyId,
+        normalizedName: name.trim().toLowerCase(),
+      },
+    );
+  });
+}
+
+function companyCreateBatch(db, {
+  storeId = 'store-1',
+  companyId = 'company-new',
+  name = 'New Company',
+  phone,
+  isActive = true,
+  claimCompanyId = companyId,
+  claimName = name.trim().toLowerCase(),
+  claimKey = companyNameKey(name),
+} = {}) {
+  const batch = writeBatch(db);
+  const companyData = {
+    name: name.trim(),
+    ...(phone === undefined ? {} : { phone }),
+    isActive,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+  batch.set(doc(db, 'stores', storeId, 'companies', companyId), companyData);
+  batch.set(
+    doc(db, 'stores', storeId, 'companyNameKeys', claimKey),
+    { companyId: claimCompanyId, normalizedName: claimName },
+  );
+  return batch;
+}
+
+async function readCompanyAndClaim({ storeId = 'store-1', companyId, name }) {
+  let result;
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    const [company, claim] = await Promise.all([
+      getDoc(doc(db, 'stores', storeId, 'companies', companyId)),
+      getDoc(doc(db, 'stores', storeId, 'companyNameKeys', companyNameKey(name))),
+    ]);
+    result = { company, claim };
+  });
+  return result;
 }
 
 async function assertPermissionDenied(operation) {
@@ -680,4 +747,419 @@ test('cross-store Admin cannot update an employee membership', async () => {
     storeId: 'store-2',
     storeActive: false,
   }).commit());
+});
+
+test('Admin can atomically create a company with its matching name claim', async () => {
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertSucceeds(companyCreateBatch(db, {
+    name: '  Example Supplier  ',
+    phone: '+1 555 0199',
+  }).commit());
+  const { company, claim } = await readCompanyAndClaim({
+    companyId: 'company-new',
+    name: 'example supplier',
+  });
+  assert.equal(company.data().name, 'Example Supplier');
+  assert.equal(company.data().isActive, true);
+  assert.equal(claim.data().companyId, 'company-new');
+  assert.equal(claim.data().normalizedName, 'example supplier');
+});
+
+test('Employee cannot create a company or company name claim', async () => {
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await assertFails(companyCreateBatch(db).commit());
+});
+
+test('company creation without its matching claim is denied', async () => {
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'companies', 'orphan'), {
+    name: 'Orphan Company',
+    isActive: true,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  }));
+});
+
+test('company name claim cannot be created without a matching company', async () => {
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertFails(setDoc(
+    doc(db, 'stores', 'store-1', 'companyNameKeys', companyNameKey('Orphan')),
+    { companyId: 'missing-company', normalizedName: 'orphan' },
+  ));
+});
+
+test('company creation denies mismatched claim company, name, or key', async () => {
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertFails(companyCreateBatch(db, {
+    companyId: 'wrong-company',
+    name: 'Wrong Company',
+    claimCompanyId: 'different-company',
+  }).commit());
+  await assertFails(companyCreateBatch(db, {
+    companyId: 'wrong-name',
+    name: 'Wrong Name',
+    claimName: 'different name',
+  }).commit());
+  await assertFails(companyCreateBatch(db, {
+    companyId: 'wrong-key',
+    name: 'Wrong Key',
+    claimKey: companyNameKey('Different Key'),
+  }).commit());
+});
+
+test('duplicate normalized company names are denied', async () => {
+  await seedCompany({ name: 'Existing Company' });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertFails(companyCreateBatch(db, {
+    companyId: 'duplicate-company',
+    name: '  EXISTING COMPANY ',
+  }).commit());
+});
+
+test('Admin can list active and inactive companies', async () => {
+  await seedCompany();
+  await seedCompany({
+    companyId: 'inactive-company',
+    name: 'Inactive Company',
+    isActive: false,
+  });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  const result = await assertSucceeds(getDocs(
+    collection(db, 'stores', 'store-1', 'companies'),
+  ));
+  assert.equal(result.size, 2);
+});
+
+test('Employee can query only active companies', async () => {
+  await seedEmployee();
+  await seedCompany();
+  await seedCompany({
+    companyId: 'inactive-company',
+    name: 'Inactive Company',
+    isActive: false,
+  });
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  const result = await assertSucceeds(getDocs(query(
+    collection(db, 'stores', 'store-1', 'companies'),
+    where('isActive', '==', true),
+  )));
+  assert.equal(result.size, 1);
+  assert.equal(result.docs[0].id, 'company-1');
+});
+
+test('Employee cannot query companies without an active-only constraint', async () => {
+  await seedEmployee();
+  await seedCompany();
+  await seedCompany({
+    companyId: 'inactive-company',
+    name: 'Inactive Company',
+    isActive: false,
+  });
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await assertFails(getDocs(collection(db, 'stores', 'store-1', 'companies')));
+});
+
+test('Employee can get an active company but cannot get an inactive one', async () => {
+  await seedEmployee();
+  await seedCompany();
+  await seedCompany({
+    companyId: 'inactive-company',
+    name: 'Inactive Company',
+    isActive: false,
+  });
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await assertSucceeds(getDoc(doc(db, 'stores', 'store-1', 'companies', 'company-1')));
+  await assertFails(getDoc(
+    doc(db, 'stores', 'store-1', 'companies', 'inactive-company'),
+  ));
+});
+
+test('company and company-name claim access is denied across stores', async () => {
+  await seedCompany({ storeId: 'store-2', name: 'Store Two Company' });
+  const adminDb = testEnv.authenticatedContext('admin-1').firestore();
+  await assertFails(getDocs(
+    collection(adminDb, 'stores', 'store-2', 'companies'),
+  ));
+  await assertFails(getDoc(
+    doc(adminDb, 'stores', 'store-2', 'companies', 'company-1'),
+  ));
+  await assertFails(setDoc(
+    doc(adminDb, 'stores', 'store-2', 'companyNameKeys', companyNameKey('Injected')),
+    { companyId: 'foreign-company', normalizedName: 'injected' },
+  ));
+});
+
+test('Admin can update company phone without changing its name claim', async () => {
+  await seedCompany();
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertSucceeds(updateDoc(
+    doc(db, 'stores', 'store-1', 'companies', 'company-1'),
+    { phone: '+1 555 0111', updatedAt: serverTimestamp() },
+  ));
+  const { company, claim } = await readCompanyAndClaim({
+    companyId: 'company-1',
+    name: 'Example Company',
+  });
+  assert.equal(company.data().phone, '+1 555 0111');
+  assert.equal(claim.data().companyId, 'company-1');
+});
+
+test('Admin can atomically rename company and replace its name claim', async () => {
+  await seedCompany();
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertSucceeds(runTransaction(db, async (transaction) => {
+    const companyRef = doc(db, 'stores', 'store-1', 'companies', 'company-1');
+    const oldClaimRef = doc(
+      db,
+      'stores',
+      'store-1',
+      'companyNameKeys',
+      companyNameKey('Example Company'),
+    );
+    const newClaimRef = doc(
+      db,
+      'stores',
+      'store-1',
+      'companyNameKeys',
+      companyNameKey('Renamed Company'),
+    );
+    const [company, oldClaim, newClaim] = await Promise.all([
+      transaction.get(companyRef),
+      transaction.get(oldClaimRef),
+      transaction.get(newClaimRef),
+    ]);
+    assert.equal(company.exists(), true);
+    assert.equal(oldClaim.exists(), true);
+    assert.equal(newClaim.exists(), false);
+    transaction.set(newClaimRef, {
+      companyId: 'company-1',
+      normalizedName: 'renamed company',
+    });
+    transaction.update(companyRef, {
+      name: 'Renamed Company',
+      updatedAt: serverTimestamp(),
+    });
+    transaction.delete(oldClaimRef);
+  }));
+  const { company, claim } = await readCompanyAndClaim({
+    companyId: 'company-1',
+    name: 'Renamed Company',
+  });
+  assert.equal(company.data().name, 'Renamed Company');
+  assert.equal(claim.data().companyId, 'company-1');
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const oldClaim = await getDoc(doc(
+      context.firestore(),
+      'stores',
+      'store-1',
+      'companyNameKeys',
+      companyNameKey('Example Company'),
+    ));
+    assert.equal(oldClaim.exists(), false);
+  });
+});
+
+test('company rename without a new claim is denied', async () => {
+  await seedCompany();
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertFails(updateDoc(
+    doc(db, 'stores', 'store-1', 'companies', 'company-1'),
+    { name: 'Unclaimed Name', updatedAt: serverTimestamp() },
+  ));
+});
+
+test('old claim cannot be released without a paired company rename', async () => {
+  await seedCompany();
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertFails(deleteDoc(doc(
+    db,
+    'stores',
+    'store-1',
+    'companyNameKeys',
+    companyNameKey('Example Company'),
+  )));
+});
+
+test('rename to an existing company name is denied', async () => {
+  await seedCompany({ companyId: 'company-1', name: 'First Company' });
+  await seedCompany({ companyId: 'company-2', name: 'Second Company' });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertFails(runTransaction(db, async (transaction) => {
+    const companyRef = doc(db, 'stores', 'store-1', 'companies', 'company-1');
+    const newClaimRef = doc(
+      db,
+      'stores',
+      'store-1',
+      'companyNameKeys',
+      companyNameKey('Second Company'),
+    );
+    await transaction.get(companyRef);
+    await transaction.get(newClaimRef);
+    transaction.set(newClaimRef, {
+      companyId: 'company-1',
+      normalizedName: 'second company',
+    });
+    transaction.update(companyRef, {
+      name: 'Second Company',
+      updatedAt: serverTimestamp(),
+    });
+    transaction.delete(doc(
+      db,
+      'stores',
+      'store-1',
+      'companyNameKeys',
+      companyNameKey('First Company'),
+    ));
+  }));
+});
+
+test('same-normalized-name edit preserves the existing claim', async () => {
+  await seedCompany();
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertSucceeds(updateDoc(
+    doc(db, 'stores', 'store-1', 'companies', 'company-1'),
+    { name: 'EXAMPLE COMPANY', updatedAt: serverTimestamp() },
+  ));
+  const { company, claim } = await readCompanyAndClaim({
+    companyId: 'company-1',
+    name: 'Example Company',
+  });
+  assert.equal(company.data().name, 'EXAMPLE COMPANY');
+  assert.equal(claim.data().normalizedName, 'example company');
+});
+
+test('Employee cannot edit companies or create/delete name claims', async () => {
+  await seedCompany();
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await assertFails(updateDoc(
+    doc(db, 'stores', 'store-1', 'companies', 'company-1'),
+    { phone: 'unauthorized', updatedAt: serverTimestamp() },
+  ));
+  await assertFails(setDoc(
+    doc(db, 'stores', 'store-1', 'companyNameKeys', companyNameKey('Employee')),
+    { companyId: 'employee-company', normalizedName: 'employee' },
+  ));
+  await assertFails(deleteDoc(doc(
+    db,
+    'stores',
+    'store-1',
+    'companyNameKeys',
+    companyNameKey('Example Company'),
+  )));
+});
+
+test('Admin can deactivate and reactivate a company without changing its claim', async () => {
+  await seedCompany();
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  const companyRef = doc(db, 'stores', 'store-1', 'companies', 'company-1');
+  await assertSucceeds(updateDoc(companyRef, {
+    isActive: false,
+    updatedAt: serverTimestamp(),
+  }));
+  let { company, claim } = await readCompanyAndClaim({
+    companyId: 'company-1',
+    name: 'Example Company',
+  });
+  assert.equal(company.data().isActive, false);
+  assert.equal(claim.exists(), true);
+  await assertSucceeds(updateDoc(companyRef, {
+    isActive: true,
+    updatedAt: serverTimestamp(),
+  }));
+  ({ company, claim } = await readCompanyAndClaim({
+    companyId: 'company-1',
+    name: 'Example Company',
+  }));
+  assert.equal(company.data().isActive, true);
+  assert.equal(claim.exists(), true);
+});
+
+test('company delete, company claim update, and direct claim delete are denied', async () => {
+  await seedCompany();
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertFails(deleteDoc(
+    doc(db, 'stores', 'store-1', 'companies', 'company-1'),
+  ));
+  await assertFails(updateDoc(
+    doc(
+      db,
+      'stores',
+      'store-1',
+      'companyNameKeys',
+      companyNameKey('Example Company'),
+    ),
+    { companyId: 'other-company' },
+  ));
+  await assertFails(deleteDoc(doc(
+    db,
+    'stores',
+    'store-1',
+    'companyNameKeys',
+    companyNameKey('Example Company'),
+  )));
+});
+
+test('company create rejects invalid fields, names, statuses, and timestamps', async () => {
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertFails(companyCreateBatch(db, {
+    companyId: 'empty-name',
+    name: '   ',
+  }).commit());
+  await assertFails(companyCreateBatch(db, {
+    companyId: 'too-long-name',
+    name: 'a'.repeat(121),
+  }).commit());
+  await assertFails(companyCreateBatch(db, {
+    companyId: 'inactive-create',
+    name: 'Inactive Create',
+    isActive: false,
+  }).commit());
+  await assertFails(companyCreateBatch(db, {
+    companyId: 'bad-phone',
+    name: 'Bad Phone',
+    phone: 123,
+  }).commit());
+  const badTimestampBatch = writeBatch(db);
+  badTimestampBatch.set(
+    doc(db, 'stores', 'store-1', 'companies', 'bad-timestamp'),
+    {
+      name: 'Bad Timestamp',
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    },
+  );
+  badTimestampBatch.set(
+    doc(
+      db,
+      'stores',
+      'store-1',
+      'companyNameKeys',
+      companyNameKey('Bad Timestamp'),
+    ),
+    { companyId: 'bad-timestamp', normalizedName: 'bad timestamp' },
+  );
+  await assertFails(badTimestampBatch.commit());
+  const extraFieldBatch = companyCreateBatch(db, {
+    companyId: 'extra-field',
+    name: 'Extra Field',
+  });
+  extraFieldBatch.update(
+    doc(db, 'stores', 'store-1', 'companies', 'extra-field'),
+    { forbidden: true },
+  );
+  await assertFails(extraFieldBatch.commit());
+});
+
+test('company update cannot modify createdAt or add unapproved fields', async () => {
+  await seedCompany();
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertFails(updateDoc(
+    doc(db, 'stores', 'store-1', 'companies', 'company-1'),
+    { createdAt: serverTimestamp(), updatedAt: serverTimestamp() },
+  ));
+  await assertFails(updateDoc(
+    doc(db, 'stores', 'store-1', 'companies', 'company-1'),
+    { internalNote: 'not allowed', updatedAt: serverTimestamp() },
+  ));
 });
