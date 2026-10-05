@@ -18,6 +18,7 @@ import {
   serverTimestamp,
   setDoc,
   updateDoc,
+  writeBatch,
 } from 'firebase/firestore';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -162,22 +163,54 @@ test('authenticated admin can atomically rotate the store Join Code claim', asyn
   });
 });
 
+test('Admin initial setup still creates its original global user schema', async () => {
+  const uid = 'new-admin';
+  const code = 'JJJJ-KKKK-MMMM-NNNN';
+  const codeId = code.replaceAll('-', '').toLowerCase();
+  const db = testEnv.authenticatedContext(uid, {
+    email: 'admin@example.com',
+  }).firestore();
+  const batch = writeBatch(db);
+  batch.set(doc(db, 'stores', uid), {
+    name: 'Admin store', ownerUid: uid, joinCode: code,
+    createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+  });
+  batch.set(doc(db, 'storeJoinCodes', codeId), {
+    storeId: uid, createdAt: serverTimestamp(),
+  });
+  batch.set(doc(db, 'stores', uid, 'users', uid), {
+    uid, role: 'ADMIN', isActive: true,
+    createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+  });
+  batch.set(doc(db, 'users', uid), {
+    uid, email: 'admin@example.com', displayName: 'New Admin',
+    createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+  });
+  batch.set(doc(db, 'users', uid, 'memberships', uid), {
+    storeId: uid, role: 'ADMIN', isActive: true,
+  });
+  await assertSucceeds(batch.commit());
+});
+
 async function employeeBatch(db, {
   uid = 'employee-1',
+  email = 'employee@example.com',
   storeId = 'store-1',
   role = 'EMPLOYEE',
   isActive = true,
   joinCodeId = employeeCodeId,
+  profileStoreId = storeId,
   includeUser = true,
   includeIndex = true,
   includeStoreMembership = true,
 } = {}) {
-  const batch = (await import('firebase/firestore')).writeBatch(db);
+  const batch = writeBatch(db);
   if (includeUser) {
     batch.set(doc(db, 'users', uid), {
       uid,
-      email: 'employee@example.com',
+      email,
       displayName: 'Example Employee',
+      storeId: profileStoreId,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
@@ -270,10 +303,13 @@ test('existing user or membership cannot be registered again', async () => {
   await assertFails(employeeBatch(existingMembershipDb, { uid: 'existing-member' }));
 });
 
-test('employee cannot create only membership documents or modify owner and claims', async () => {
+test('employee cannot create membership-only or partial batches or modify owner and claims', async () => {
   const db = testEnv.authenticatedContext('employee-partial', {
     email: 'employee@example.com',
   }).firestore();
+  await assertFails(employeeBatch(db, {
+    uid: 'employee-membership-only', includeUser: false,
+  }));
   await assertFails(employeeBatch(db, {
     uid: 'employee-partial', includeStoreMembership: false,
   }));
@@ -283,7 +319,7 @@ test('employee cannot create only membership documents or modify owner and claim
   }));
 });
 
-test('membership creation is one-time, but profile-only create is possible under current schema', async () => {
+test('profile-only and profile/membership store mismatch are denied; second membership is denied', async () => {
   const db = testEnv.authenticatedContext('employee-once', {
     email: 'employee@example.com',
   }).firestore();
@@ -297,11 +333,41 @@ test('membership creation is one-time, but profile-only create is possible under
   const orphanDb = testEnv.authenticatedContext('profile-only', {
     email: 'employee@example.com',
   }).firestore();
-  await assertSucceeds(setDoc(doc(orphanDb, 'users', 'profile-only'), {
+  await assertFails(setDoc(doc(orphanDb, 'users', 'profile-only'), {
     uid: 'profile-only',
     email: 'employee@example.com',
     displayName: 'Profile Only',
+    storeId: 'store-1',
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
+  }));
+
+  const mismatchDb = testEnv.authenticatedContext('profile-membership-mismatch', {
+    email: 'employee@example.com',
+  }).firestore();
+  await assertFails(employeeBatch(mismatchDb, {
+    uid: 'profile-membership-mismatch',
+    storeId: 'store-2',
+    profileStoreId: 'store-1',
+    joinCodeId: otherStoreCodeId,
+  }));
+});
+
+test('multiple employees can use the same active Join Code', async () => {
+  const firstDb = testEnv.authenticatedContext('employee-a', {
+    email: 'employee-a@example.com',
+  }).firestore();
+  const secondDb = testEnv.authenticatedContext('employee-b', {
+    email: 'employee-b@example.com',
+  }).firestore();
+  await assertSucceeds(employeeBatch(firstDb, {
+    uid: 'employee-a',
+    email: 'employee-a@example.com',
+    profileStoreId: 'store-1',
+  }));
+  await assertSucceeds(employeeBatch(secondDb, {
+    uid: 'employee-b',
+    email: 'employee-b@example.com',
+    profileStoreId: 'store-1',
   }));
 });

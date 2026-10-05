@@ -306,7 +306,7 @@ service cloud.firestore {
         && existsAfter(membershipIndexPath(uid, storeId))
         && existsAfter(storeUserPath(storeId, uid))
         && hasOnlyKeys(userData, [
-          'uid', 'email', 'displayName', 'createdAt', 'updatedAt'
+          'uid', 'email', 'displayName', 'storeId', 'createdAt', 'updatedAt'
         ])
         && userData.uid == uid
         && userData.email is string
@@ -314,6 +314,7 @@ service cloud.firestore {
         && userData.displayName is string
         && userData.displayName.matches('.*\\S.*')
         && userData.displayName.size() <= 120
+        && userData.storeId == storeId
         && userData.createdAt == request.time
         && userData.updatedAt == request.time
         && hasOnlyKeys(indexData, [
@@ -334,24 +335,6 @@ service cloud.firestore {
         && storeMember.isActive == true
         && storeMember.createdAt == request.time
         && storeMember.updatedAt == request.time;
-    }
-
-    function validEmployeeUserCreate(uid) {
-      let data = request.resource.data;
-      return isSignedIn()
-        && request.auth.uid == uid
-        && !exists(userPath(uid))
-        && hasOnlyKeys(data, [
-          'uid', 'email', 'displayName', 'createdAt', 'updatedAt'
-        ])
-        && data.uid == uid
-        && data.email is string
-        && data.email == request.auth.token.email
-        && data.displayName is string
-        && data.displayName.matches('.*\\S.*')
-        && data.displayName.size() <= 120
-        && data.createdAt == request.time
-        && data.updatedAt == request.time;
     }
 
     function validJoinCodeClaimCreate(codeId) {
@@ -457,7 +440,7 @@ service cloud.firestore {
       // validate all four batch documents at deterministic paths. A future
       // trusted Cloud Function may use independent store IDs.
       allow create: if isValidInitialSetup(uid)
-        || validEmployeeUserCreate(uid);
+        || validEmployeeRegistration(uid, request.resource.data.storeId);
 
       // Users may update only their own display information.
       // Store role/status is NOT kept here.

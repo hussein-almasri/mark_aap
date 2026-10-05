@@ -76,6 +76,7 @@ class FirestoreEmployeeRegistrationWriter
       'uid': uid,
       'email': email.trim(),
       'displayName': displayName.trim(),
+      'storeId': storeId,
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
     });
