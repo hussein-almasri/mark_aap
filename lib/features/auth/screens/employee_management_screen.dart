@@ -1,3 +1,5 @@
+import 'dart:developer' as developer;
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
@@ -55,7 +57,18 @@ class _EmployeeManagementScreenState extends State<EmployeeManagementScreen> {
         _loadError = null;
         _isLoading = false;
       });
-    } catch (error) {
+    } catch (error, stackTrace) {
+      final firebaseDetails = error is FirebaseException
+          ? ' code=${error.code} message=${error.message} plugin=${error.plugin}'
+          : '';
+      developer.log(
+        'EmployeeManagementScreen.listEmployees failed '
+        'storeId=${widget.user.storeId} '
+        'type=${error.runtimeType}$firebaseDetails',
+        name: 'EmployeeManagementScreen',
+        error: error,
+        stackTrace: stackTrace,
+      );
       if (!mounted) return;
       setState(() {
         _loadError = _loadErrorMessage(error);
