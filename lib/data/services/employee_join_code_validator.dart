@@ -3,7 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../core/utils/join_code.dart';
 
 abstract interface class EmployeeJoinCodeLookup {
-  Future<bool> claimExists(String normalizedCode);
+  Future<String?> claimStoreId(String normalizedCode);
 }
 
 class FirestoreEmployeeJoinCodeLookup implements EmployeeJoinCodeLookup {
@@ -13,21 +13,23 @@ class FirestoreEmployeeJoinCodeLookup implements EmployeeJoinCodeLookup {
   final FirebaseFirestore _firestore;
 
   @override
-  Future<bool> claimExists(String normalizedCode) async {
+  Future<String?> claimStoreId(String normalizedCode) async {
     final snapshot = await _firestore
         .collection('storeJoinCodes')
         .doc(normalizedCode)
         .get();
-    return snapshot.exists;
+    return snapshot.data()?['storeId'] as String?;
   }
 }
 
 enum EmployeeJoinCodeStatus { valid, invalidCode }
 
 class EmployeeJoinCodeResult {
-  const EmployeeJoinCodeResult(this.status);
+  const EmployeeJoinCodeResult(this.status, {this.storeId, this.joinCodeId});
 
   final EmployeeJoinCodeStatus status;
+  final String? storeId;
+  final String? joinCodeId;
 }
 
 class EmployeeJoinCodeValidator {
@@ -42,10 +44,15 @@ class EmployeeJoinCodeValidator {
     }
 
     final normalizedCode = JoinCode.normalize(rawCode);
-    if (!await _lookup.claimExists(normalizedCode)) {
+    final storeId = await _lookup.claimStoreId(normalizedCode);
+    if (storeId == null || storeId.isEmpty) {
       return const EmployeeJoinCodeResult(EmployeeJoinCodeStatus.invalidCode);
     }
 
-    return const EmployeeJoinCodeResult(EmployeeJoinCodeStatus.valid);
+    return EmployeeJoinCodeResult(
+      EmployeeJoinCodeStatus.valid,
+      storeId: storeId,
+      joinCodeId: normalizedCode,
+    );
   }
 }

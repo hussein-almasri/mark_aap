@@ -1,13 +1,19 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../../../core/utils/employee_registration_form_validator.dart';
 import '../../../data/services/employee_join_code_validator.dart';
+import '../services/employee_registration_service.dart';
 
 class EmployeeRegistrationScreen extends StatefulWidget {
-  const EmployeeRegistrationScreen({this.joinCodeValidator, super.key});
+  const EmployeeRegistrationScreen({
+    this.joinCodeValidator,
+    this.registrationService,
+    super.key,
+  });
 
   final EmployeeJoinCodeValidator? joinCodeValidator;
+  final EmployeeRegistrationService? registrationService;
 
   @override
   State<EmployeeRegistrationScreen> createState() =>
@@ -23,17 +29,25 @@ class _EmployeeRegistrationScreenState
   final _confirmPasswordController = TextEditingController();
   final _joinCodeController = TextEditingController();
   final _formValidator = const EmployeeRegistrationFormValidator();
-  late final EmployeeJoinCodeValidator _joinCodeValidator;
+  late final EmployeeRegistrationService _registrationService;
   bool _isLoading = false;
-  bool _isJoinCodeValid = false;
   String? _message;
   bool _isError = false;
 
   @override
   void initState() {
     super.initState();
-    _joinCodeValidator =
-        widget.joinCodeValidator ?? EmployeeJoinCodeValidator();
+    if (widget.registrationService != null) {
+      _registrationService = widget.registrationService!;
+    } else {
+      final joinCodeValidator =
+          widget.joinCodeValidator ?? EmployeeJoinCodeValidator();
+      _registrationService = EmployeeRegistrationService(
+        joinCodeValidator: joinCodeValidator,
+        auth: FirebaseEmployeeRegistrationAuth(),
+        writer: FirestoreEmployeeRegistrationWriter(),
+      );
+    }
   }
 
   @override
@@ -46,48 +60,52 @@ class _EmployeeRegistrationScreenState
     super.dispose();
   }
 
-  Future<void> _validateAndContinue() async {
+  Future<void> _register() async {
+    if (_isLoading) return;
     FocusScope.of(context).unfocus();
     if (!_formKey.currentState!.validate()) return;
-
     setState(() {
       _isLoading = true;
       _message = null;
-      _isJoinCodeValid = false;
     });
     try {
-      final result = await _joinCodeValidator.validate(
-        _joinCodeController.text,
+      await _registrationService.register(
+        displayName: _nameController.text,
+        email: _emailController.text,
+        password: _passwordController.text,
+        joinCode: _joinCodeController.text,
       );
-      if (!mounted) return;
-      switch (result.status) {
-        case EmployeeJoinCodeStatus.invalidCode:
-          _showMessage('كود الانضمام غير صحيح', isError: true);
-          break;
-        case EmployeeJoinCodeStatus.valid:
-          _showMessage('كود الانضمام صالح. ستتوفر متابعة التسجيل لاحقًا.');
-          setState(() => _isJoinCodeValid = true);
-          break;
+      // AuthGate observes the newly signed-in Firebase user.
+    } on InvalidEmployeeJoinCodeException {
+      if (mounted) {
+        _showMessage('كود الانضمام غير صحيح أو لم يعد فعالًا.', isError: true);
       }
-    } on FirebaseException catch (error) {
-      if (!mounted) return;
-      if (error.code == 'permission-denied') {
-        _showMessage(
-          'تعذر التحقق من كود الانضمام بسبب صلاحيات القراءة. لا يمكن إكمال التحقق قبل تحديث آمن للصلاحيات.',
-          isError: true,
-        );
-      } else {
-        _showMessage(
-          'تعذر التحقق من كود الانضمام. حاول مرة أخرى.',
-          isError: true,
-        );
+    } on FirebaseAuthException catch (error) {
+      if (mounted) {
+        _showMessage(employeeAuthErrorMessage(error), isError: true);
       }
-    } catch (_) {
+    } on EmployeeRegistrationException catch (error) {
       if (!mounted) return;
+      final denied =
+          error.cause is FirebaseException &&
+          (error.cause as FirebaseException).code == 'permission-denied';
       _showMessage(
-        'تعذر التحقق من كود الانضمام. حاول مرة أخرى.',
+        error.cleanupError == null
+            ? (denied
+                  ? 'تعذر إكمال التسجيل بسبب رفض صلاحيات الحفظ.'
+                  : 'تعذر إكمال التسجيل. حاول مرة أخرى.')
+            : (denied
+                  ? 'رفض Firestore حفظ التسجيل، كما تعذر حذف حساب Auth غير المكتمل. تواصل مع المسؤول.'
+                  : 'فشل حفظ بيانات التسجيل وتعذر حذف حساب Auth غير المكتمل. تواصل مع المسؤول.'),
         isError: true,
       );
+    } catch (_) {
+      if (mounted) {
+        _showMessage(
+          'تعذر إنشاء الحساب. تحقق من الاتصال وحاول مرة أخرى.',
+          isError: true,
+        );
+      }
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -190,9 +208,8 @@ class _EmployeeRegistrationScreenState
                       ),
                       validator: _formValidator.validateJoinCode,
                       onChanged: (_) {
-                        if (_isJoinCodeValid || _message != null) {
+                        if (_message != null) {
                           setState(() {
-                            _isJoinCodeValid = false;
                             _message = null;
                           });
                         }
@@ -215,9 +232,7 @@ class _EmployeeRegistrationScreenState
                     SizedBox(
                       height: 52,
                       child: FilledButton(
-                        onPressed: _isLoading || _isJoinCodeValid
-                            ? null
-                            : _validateAndContinue,
+                        onPressed: _isLoading ? null : _register,
                         child: _isLoading
                             ? const SizedBox.square(
                                 dimension: 22,
