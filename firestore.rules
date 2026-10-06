@@ -412,6 +412,15 @@ service cloud.firestore {
         && operation[fieldName] == businessId;
     }
 
+    function supplierPaymentOperationCompletedAfter(storeId, paymentId) {
+      let path = operationPath(storeId, paymentId);
+      let operation = getAfter(path).data;
+
+      return operation.status == 'COMPLETED'
+        && operation.type == 'CREATE_SUPPLIER_PAYMENT'
+        && operation.paymentId == paymentId;
+    }
+
     function photoMetadataMatchesAfter(storeId, invoiceId, photoId, order) {
       let path = purchaseInvoicePhotoPath(storeId, invoiceId, photoId);
       let photo = getAfter(path).data;
@@ -593,11 +602,6 @@ service cloud.firestore {
         && amountFils is int
         && amountFils > 0
         && existsAfter(debtPath)
-        && debt.invoiceId == invoiceId
-        && debt.companyId == data.companyId
-        && debt.companyName == data.companyName
-        && debt.status == 'OPEN'
-        && debt.remainingAmountFils >= amountFils
         && debt.lastOperationId == paymentId;
     }
 
@@ -621,7 +625,10 @@ service cloud.firestore {
         && (count < 5 || (data.allocation1InvoiceId != data.allocation5InvoiceId
           && data.allocation2InvoiceId != data.allocation5InvoiceId
           && data.allocation3InvoiceId != data.allocation5InvoiceId
-          && data.allocation4InvoiceId != data.allocation5InvoiceId));
+          && data.allocation4InvoiceId != data.allocation5InvoiceId))
+        && data.keys().size()
+          == 9 + (2 * count)
+            + (data.keys().hasAny(['notes']) ? 1 : 0);
     }
 
     function validSupplierPaymentCreate(storeId, paymentId) {
@@ -657,6 +664,7 @@ service cloud.firestore {
         && data.createdBy == request.auth.uid
         && data.operationId is string
         && data.operationId == paymentId
+        && supplierPaymentOperationCompletedAfter(storeId, paymentId)
         && (!data.keys().hasAny(['notes'])
           || (data.notes is string
             && data.notes == data.notes.trim()
@@ -689,6 +697,7 @@ service cloud.firestore {
         && payment.operationId == paymentId
         && allocationAmount > 0
         && resource.data.invoiceId == debtId
+        && resource.data.status == 'OPEN'
         && exists(invoicePath)
         && invoice.status == 'ACTIVE'
         && invoice.companyId == resource.data.companyId
