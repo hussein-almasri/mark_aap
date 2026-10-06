@@ -1358,41 +1358,32 @@ function supplierPaymentBatch(db, {
   allocations,
   source = 'OUTSIDE_CASH',
   notes,
-  overrideManifest,
   overrideAmountFils,
-  addExtraAllocation = false,
   createdBy = 'admin-1',
 } = {}) {
   const amountFils = overrideAmountFils ??
     allocations.reduce((total, allocation) => total + allocation.amountFils, 0);
-  const allocationManifest = overrideManifest ??
-    allocations.map(({ invoiceId, amountFils: allocationAmount }) => ({
-      invoiceId,
-      debtId: invoiceId,
-      amountFils: allocationAmount,
-    }));
-  const allocationAmountsByDebt = Object.fromEntries(
-    allocationManifest.map((entry) => [entry.debtId, entry.amountFils]),
-  );
-  const batch = writeBatch(db);
-  batch.set(doc(db, 'stores', 'store-1', 'supplierPayments', paymentId), {
+  const paymentDoc = {
     companyId: 'company-1',
     companyName: 'Example Company',
     amountFils,
     source,
     status: 'ACTIVE',
-    allocationCount: allocationManifest.length,
-    allocatedAmountFils: amountFils,
-    allocationManifest,
-    allocationAmountsByDebt,
+    allocationCount: allocations.length,
     createdAt: serverTimestamp(),
     createdBy,
     operationId: paymentId,
     ...(notes === undefined ? {} : { notes }),
+  };
+  allocations.forEach(({ invoiceId, amountFils: allocationAmount }, index) => {
+    const slot = index + 1;
+    paymentDoc[`allocation${slot}InvoiceId`] = invoiceId;
+    paymentDoc[`allocation${slot}AmountFils`] = allocationAmount;
   });
-  allocations.forEach((allocation) => {
-    const { invoiceId, amountFils: allocationAmount } = allocation;
-    const previous = allocation.remainingAmountFils ?? 10000;
+  const batch = writeBatch(db);
+  batch.set(doc(db, 'stores', 'store-1', 'supplierPayments', paymentId), paymentDoc);
+  allocations.forEach(({ invoiceId, amountFils: allocationAmount }, index) => {
+    const previous = allocations[index].remainingAmountFils ?? 10000;
     const remainingAmountFils = previous - allocationAmount;
     batch.update(doc(db, 'stores', 'store-1', 'supplierDebts', invoiceId), {
       remainingAmountFils,
@@ -1400,25 +1391,6 @@ function supplierPaymentBatch(db, {
       lastOperationId: paymentId,
     });
   });
-  if (addExtraAllocation) {
-    batch.set(
-      doc(
-        db,
-        'stores',
-        'store-1',
-        'supplierPayments',
-        paymentId,
-        'allocations',
-        'unlisted-invoice',
-      ),
-      {
-        invoiceId: 'invoice-1',
-        debtId: 'invoice-1',
-        amountFils: 1,
-        createdAt: serverTimestamp(),
-      },
-    );
-  }
   if (source == 'SHOP_CASH') {
     batch.set(
       doc(
