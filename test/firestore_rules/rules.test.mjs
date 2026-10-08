@@ -1253,7 +1253,131 @@ async function seedFinancialInvoice({
         createdBy: 'admin-1',
         operationId: invoiceId,
         lastOperationId: invoiceId,
-      });
+});
+
+test('Employee cannot cancel transaction', async () => {
+  await seedCustomer({ customerId: 'customer-1', isActive: true });
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1'), {
+      name: 'Test Customer',
+      debtEnabled: true,
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      createdBy: 'admin-1',
+      updatedBy: 'admin-1',
+    });
+    await setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
+      type: 'DEBT',
+      amountFils: 5000,
+      createdAt: new Date(),
+      createdBy: 'admin-1',
+      status: 'ACTIVE',
+    });
+  });
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
+    status: 'CANCELLED',
+    cancelledAt: serverTimestamp(),
+    cancelledBy: 'employee-1',
+    cancellationReason: 'Employee attempt',
+  }));
+});
+
+test('Admin can cancel ACTIVE transaction', async () => {
+  await seedCustomer({ customerId: 'customer-1', isActive: true });
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1'), {
+      name: 'Test Customer',
+      debtEnabled: true,
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      createdBy: 'admin-1',
+      updatedBy: 'admin-1',
+    });
+    await setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
+      type: 'DEBT',
+      amountFils: 5000,
+      createdAt: new Date(),
+      createdBy: 'admin-1',
+      status: 'ACTIVE',
+    });
+  });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertSucceeds(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
+    status: 'CANCELLED',
+    cancelledAt: serverTimestamp(),
+    cancelledBy: 'admin-1',
+    cancellationReason: 'Admin cancellation',
+  }));
+  const debt = await getDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'));
+  assert.equal(debt.data().status, 'CANCELLED');
+});
+
+test('Cancellation requires previous ACTIVE state', async () => {
+  await seedCustomer({ customerId: 'customer-1', isActive: true });
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1'), {
+      name: 'Test Customer',
+      debtEnabled: true,
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      createdBy: 'admin-1',
+      updatedBy: 'admin-1',
+    });
+    await setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
+      type: 'DEBT',
+      amountFils: 5000,
+      createdAt: new Date(),
+      createdBy: 'admin-1',
+      status: 'ACTIVE',
+    });
+  });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
+    status: 'CANCELLED',
+    cancelledAt: serverTimestamp(),
+    cancelledBy: 'admin-1',
+    cancellationReason: 'Cancel inactive',
+  }));
+  const debt = await getDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'));
+  assert.equal(debt.data().status, 'ACTIVE');
+});
+
+test('Invalid cancelledBy is denied', async () => {
+  await seedCustomer({ customerId: 'customer-1', isActive: true });
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1'), {
+      name: 'Test Customer',
+      debtEnabled: true,
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date,
+      createdBy: 'admin-1',
+      updatedBy: 'admin-1',
+    });
+    await setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
+      type: 'DEBT',
+      amountFils: 5000,
+      createdAt: new Date(),
+      createdBy: 'admin-1',
+      status: 'ACTIVE',
+    });
+  });
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
+    status: 'CANCELLED',
+    cancelledBy: 'unauthorized-user',
+    cancellationReason: 'Test',
+    cancelledAt: serverTimestamp(),
+  }));
+});
     }
     if (shopCashAmountFils > 0) {
       await setDoc(
@@ -1818,7 +1942,406 @@ test('only members can read financial records and cross-store reads are denied',
     collection(employeeDb, 'stores', 'store-2', 'purchaseInvoices'),
   ));
   const unauthenticatedDb = testEnv.unauthenticatedContext().firestore();
-  await assertFails(getDocs(
+await assertFails(getDocs(
     collection(unauthenticatedDb, 'stores', 'store-1', 'supplierDebts'),
   ));
+});
+
+test('Admin can create customer', async () => {
+  const db = testEnv.authenticatedContext('admin-1', {
+    email: 'admin@example.com',
+  }).firestore();
+  await assertSucceeds(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1'), {
+    name: 'Example Customer',
+    phone: '+1 555 0100',
+    debtEnabled: true,
+    isActive: true,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    createdBy: 'admin-1',
+    updatedBy: 'admin-1',
+  }));
+});
+
+test('Employee cannot create customer', async () => {
+  const db = testEnv.authenticatedContext('employee-1', {
+    email: 'employee@example.com',
+  }).firestore();
+  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1'), {
+    name: 'Example Customer',
+    phone: '+1 555 0100',
+    debtEnabled: true,
+    isActive: true,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    createdBy: 'admin-1',
+    updatedBy: 'admin-1',
+  }));
+});
+
+test('Admin can read active customer', async () => {
+  await seedCustomer({ customerId: 'customer-1', isActive: true });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  const result = await assertSucceeds(getDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1')));
+  assert.equal(result.data().isActive, true);
+});
+
+test('Admin can read inactive customer', async () => {
+  await seedCustomer({ customerId: 'customer-inactive', isActive: false });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  const result = await assertSucceeds(getDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-inactive')));
+  assert.equal(result.data().isActive, false);
+});
+
+test('Employee can read active customer', async () => {
+  await seedCustomer({ customerId: 'customer-1', isActive: true });
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  const result = await assertSucceeds(getDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1')));
+  assert.equal(result.data().isActive, true);
+});
+
+test('Employee cannot read inactive customer', async () => {
+  await seedCustomer({ customerId: 'customer-inactive', isActive: false });
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await assertPermissionDenied(getDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-inactive')));
+});
+
+test('Admin can update customer', async () => {
+  await seedCustomer({ customerId: 'customer-1' });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertSucceeds(updateDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1'), {
+    phone: '+1 555 0199',
+    updatedAt: serverTimestamp(),
+  }));
+  const customer = await getDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1'));
+  assert.equal(customer.data().phone, '+1 555 0199');
+});
+
+test('Employee cannot update customer', async () => {
+  await seedCustomer({ customerId: 'customer-1' });
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await assertPermissionDenied(updateDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1'), {
+    phone: '+1 555 0199',
+    updatedAt: serverTimestamp(),
+  }));
+});
+
+test('Employee cannot change debtEnabled', async () => {
+  await seedCustomer({ customerId: 'customer-1', debtEnabled: true });
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await assertPermissionDenied(updateDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1'), {
+    debtEnabled: false,
+    updatedAt: serverTimestamp(),
+  }));
+});
+
+test('Customer cannot be deleted by Admin', async () => {
+  await seedCustomer({ customerId: 'customer-1' });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertPermissionDenied(deleteDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1')));
+});
+
+test('Customer cannot be deleted by Employee', async () => {
+  await seedCustomer({ customerId: 'customer-1' });
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await assertPermissionDenied(deleteDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1')));
+});
+
+test('Duplicate normalized customer name is denied', async () => {
+  await seedCustomer({ customerId: 'customer-1', name: 'Example Customer' });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-2'), {
+    name: '  example customer ',
+    phone: '+1 555 0200',
+    debtEnabled: true,
+    isActive: true,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    createdBy: 'admin-1',
+    updatedBy: 'admin-1',
+  }));
+});
+
+test('Invalid customerNameKeys claim is denied', async () => {
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customerNameKeys', 'c_invalidkey'), {
+    customerId: 'foreign-customer',
+    normalizedName: 'invalid',
+  }));
+});
+
+test('Employee cannot create customerNameKeys claim', async () => {
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customerNameKeys', customerNameKey('New Customer')), {
+    customerId: 'employee-customer',
+    normalizedName: 'employee',
+  }));
+});
+
+test('Employee cannot delete customerNameKeys claim', async () => {
+  // First create a valid claim as admin
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(doc(db, 'stores', 'store-1', 'customerNameKeys', customerNameKey('Example Customer')), {
+      customerId: 'customer-1',
+      normalizedName: 'example customer',
+    });
+  });
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await assertPermissionDenied(deleteDoc(doc(db, 'stores', 'store-1', 'customerNameKeys', customerNameKey('Example Customer'))));
+});
+
+test('Cross-store customer access is denied', async () => {
+  // Create customer in store-2
+  await seedCustomer({ customerId: 'customer-store2', storeId: 'store-2', name: 'Store Two Customer' });
+  const adminDb = testEnv.authenticatedContext('admin-1').firestore();
+  await assertFails(getDoc(doc(adminDb, 'stores', 'store-2', 'customers', 'customer-store2')));
+  await assertFails(setDoc(doc(adminDb, 'stores', 'store-2', 'customers', 'customer-store2'), {
+    name: 'Modified',
+    updatedAt: serverTimestamp(),
+  }));\r\n});
+
+test('Admin can read customer transaction history', async () => {
+  await seedCustomer({ customerId: 'customer-1', isActive: true });
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1'), {
+      name: 'Test Customer',
+      debtEnabled: true,
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      createdBy: 'admin-1',
+      updatedBy: 'admin-1',
+    });
+  });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  const result = await assertSucceeds(getDocs(
+    collection(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions')
+  ));
+  assert.equal(result.size, 0);
+});
+
+test('Employee can read transaction history for an active customer', async () => {
+  await seedCustomer({ customerId: 'customer-1', isActive: true });
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  const result = await assertSucceeds(getDocs(
+    collection(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions')
+  ));
+  assert.equal(result.size, 0);
+});
+
+test('Employee cannot read transactions of an inactive customer', async () => {
+  await seedCustomer({ customerId: 'customer-inactive', isActive: false });
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await assertPermissionDenied(getDocs(
+    collection(db, 'stores', 'store-1', 'customers', 'customer-inactive', 'transactions')
+  ));
+});
+
+test('Admin can create DEBT', async () => {
+  await seedCustomer({ customerId: 'customer-1', debtEnabled: true, isActive: true });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertSucceeds(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
+    type: 'DEBT',
+    amountFils: 5000,
+    createdAt: serverTimestamp(),
+    createdBy: 'admin-1',
+    note: 'Test debt',
+    status: 'ACTIVE',
+  }));
+  const debt = await getDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'));
+  assert.equal(debt.data().type, 'DEBT');
+  assert.equal(debt.data().amountFils, 5000);
+});
+
+test('Employee can create DEBT when debtEnabled=true', async () => {
+  await seedCustomer({ customerId: 'customer-1', debtEnabled: true, isActive: true });
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await assertSucceeds(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
+    type: 'DEBT',
+    amountFils: 3000,
+    createdAt: serverTimestamp(),
+    createdBy: 'employee-1',
+    note: 'Employee debt',
+    status: 'ACTIVE',
+  }));
+  const debt = await getDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'));
+  assert.equal(debt.data().type, 'DEBT');
+});
+
+test('Employee cannot create DEBT when debtEnabled=false', async () => {
+  await seedCustomer({ customerId: 'customer-1', debtEnabled: false, isActive: true });
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
+    type: 'DEBT',
+    amountFils: 3000,
+    createdAt: serverTimestamp(),
+    createdBy: 'employee-1',
+    note: 'Employee debt',
+    status: 'ACTIVE',
+  }));
+});
+
+test('Admin can create DEBT when debtEnabled=false', async () => {
+  await seedCustomer({ customerId: 'customer-1', debtEnabled: false, isActive: true });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertSucceeds(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
+    type: 'DEBT',
+    amountFils: 1000,
+    createdAt: serverTimestamp(),
+    createdBy: 'admin-1',
+    note: 'Admin debt override',
+    status: 'ACTIVE',
+  }));
+  const debt = await getDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'));
+  assert.equal(debt.data().type, 'DEBT');
+});
+
+test('Admin can create PAYMENT', async () => {
+  await seedCustomer({ customerId: 'customer-1', debtEnabled: true, isActive: true });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertSucceeds(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'payment-1'), {
+    type: 'PAYMENT',
+    amountFils: 2000,
+    createdAt: serverTimestamp(),
+    createdBy: 'admin-1',
+    note: 'Test payment',
+    status: 'ACTIVE',
+  }));
+  const payment = await getDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'payment-1'));
+  assert.equal(payment.data().type, 'PAYMENT');
+});
+
+test('Employee can create PAYMENT', async () => {
+  await seedCustomer({ customerId: 'customer-1', debtEnabled: true, isActive: true });
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await assertSucceeds(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'payment-1'), {
+    type: 'PAYMENT',
+    amountFils: 1500,
+    createdAt: serverTimestamp(),
+    createdBy: 'employee-1',
+    note: 'Employee payment',
+    status: 'ACTIVE',
+  }));
+  const payment = await getDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'payment-1'));
+  assert.equal(payment.data().type, 'PAYMENT');
+});
+
+test('Payment amountFils <= 0 is denied', async () => {
+  await seedCustomer({ customerId: 'customer-1', debtEnabled: true, isActive: true });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'payment-1'), {
+    type: 'PAYMENT',
+    amountFils: 0,
+    createdAt: serverTimestamp(),
+    createdBy: 'admin-1',
+    note: 'Zero amount',
+    status: 'ACTIVE',
+  }));
+  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'payment-2'), {
+    type: 'PAYMENT',
+    amountFils: -100,
+    createdAt: serverTimestamp(),
+    createdBy: 'admin-1',
+    note: 'Negative amount',
+    status: 'ACTIVE',
+  }));
+});
+
+test('DEBT amountFils <= 0 is denied', async () => {
+  await seedCustomer({ customerId: 'customer-1', debtEnabled: true, isActive: true });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
+    type: 'DEBT',
+    amountFils: 0,
+    createdAt: serverTimestamp(),
+    createdBy: 'admin-1',
+    note: 'Zero amount',
+    status: 'ACTIVE',
+  }));
+  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-2'), {
+    type: 'DEBT',
+    amountFils: -500,
+    createdAt: serverTimestamp(),
+    createdBy: 'admin-1',
+    note: 'Negative amount',
+    status: 'ACTIVE',
+  }));
+});
+
+test('Invalid transaction type is denied', async () => {
+  await seedCustomer({ customerId: 'customer-1', debtEnabled: true, isActive: true });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 't-1'), {
+    type: 'INVALID_TYPE',
+    amountFils: 1000,
+    createdAt: serverTimestamp(),
+    createdBy: 'admin-1',
+    status: 'ACTIVE',
+  }));
+  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 't-2'), {
+    type: '',
+    amountFils: 1000,
+    createdAt: serverTimestamp(),
+    createdBy: 'admin-1',
+    status: 'ACTIVE',
+  }));
+});
+
+test('Invalid transaction status is denied', async () => {
+  await seedCustomer({ customerId: 'customer-1', debtEnabled: true, isActive: true });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 't-1'), {
+    type: 'DEBT',
+    amountFils: 1000,
+    createdAt: serverTimestamp(),
+    createdBy: 'admin-1',
+    status: 'INVALID_STATUS',
+  }));
+  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 't-2'), {
+    type: 'DEBT',
+    amountFils: 1000,
+    createdAt: serverTimestamp(),
+    createdBy: 'admin-1',
+    status: '',
+  }));
+});
+
+test('Invalid/missing createdBy is denied', async () => {
+  await seedCustomer({ customerId: 'customer-1', debtEnabled: true, isActive: true });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 't-1'), {
+    type: 'DEBT',
+    amountFils: 1000,
+    createdAt: serverTimestamp(),
+    note: 'No createdBy',
+    status: 'ACTIVE',
+  }));
+  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 't-2'), {
+    type: 'DEBT',
+    amountFils: 1000,
+    createdAt: serverTimestamp(),
+    createdBy: '',
+    status: 'ACTIVE',
+  }));
+});
+
+test('Invalid createdAt is denied', async () => {
+  await seedCustomer({ customerId: 'customer-1', debtEnabled: true, isActive: true });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 't-1'), {
+    type: 'DEBT',
+    amountFils: 1000,
+    createdAt: new Date('2020-01-01'),
+    createdBy: 'admin-1',
+    status: 'ACTIVE',
+  }));
+  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 't-2'), {
+    type: 'DEBT',
+    amountFils: 1000,
+    createdAt: 'not-a-timestamp',
+    createdBy: 'admin-1',
+    status: 'ACTIVE',
+  }));
 });
