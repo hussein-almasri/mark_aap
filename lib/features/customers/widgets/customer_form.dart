@@ -1,7 +1,7 @@
 import 'package:flutter/material';
 
-import '../../data/models/customer_model.dart';
-import '../../data/repositories/customer_repository.dart';
+import '../../../data/models/customer_model.dart';
+import '../../../data/repositories/customer_repository.dart';
 
 class CustomerAlreadyExistsException implements Exception {
   const CustomerAlreadyExistsException();

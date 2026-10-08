@@ -1,8 +1,8 @@
 import 'package:flutter/material';
 
-import '../../data/models/customer_model.dart';
-import '../../data/repositories/customer_repository.dart';
-import '../../data/models/customer_transaction_model.dart';
+import '../../../data/models/customer_model.dart';
+import '../../../data/repositories/customer_repository.dart';
+import '../../../data/models/customer_transaction_model.dart';
 
 class InsufficientBalanceException implements Exception {
   const InsufficientBalanceException();
