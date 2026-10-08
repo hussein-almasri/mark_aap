@@ -1,7 +1,9 @@
-import 'package:flutter/material';
+import 'package:flutter/material.dart';
 
-import '../../data/models/customer_model.dart';
-import '../../data/repositories/customer_repository.dart';
+import '../../../data/models/customer_model.dart';
+import '../../../data/models/user_model.dart';
+import '../../../data/repositories/customer_repository.dart';
+import '../widgets/customer_form.dart' show showAddCustomerDialog;
 
 class CustomerAlreadyExistsException implements Exception {
   const CustomerAlreadyExistsException();
@@ -192,14 +194,13 @@ class _CustomerManagementScreenState extends State<CustomerManagementScreen> {
         : const SizedBox.shrink();
   }
 
-  Widget _buildAppBar() {
+  PreferredSizeWidget _buildAppBar() {
     return AppBar(
       title: const Text('إدارة العملاء'),
       actions: [
         IconButton(
           icon: const Icon(Icons.search),
           onPressed: () {
-            // Search toggle - could implement a modal search
             setState(() {
               _showInactive = !_showInactive;
             });
@@ -208,6 +209,20 @@ class _CustomerManagementScreenState extends State<CustomerManagementScreen> {
       ],
     );
   }
+
+  Widget _buildLoadFailure() => Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(_loadError ?? 'تعذر تحميل العملاء.'),
+            const SizedBox(height: 12),
+            FilledButton(
+              onPressed: _loadCustomers,
+              child: const Text('إعادة المحاولة'),
+            ),
+          ],
+        ),
+      );
 
   @override
   Widget build(BuildContext context) {

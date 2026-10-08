@@ -1,9 +1,12 @@
-import 'package:flutter/material';
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
-import '../../data/models/customer_model.dart';
-import '../../data/models/customer_transaction_model.dart';
-import '../../data/repositories/customer_repository.dart';
-import '../../data/repositories/customer_transaction_repository.dart';
+import '../../../data/models/customer_model.dart';
+import '../../../data/models/customer_transaction_model.dart';
+import '../../../data/models/user_model.dart';
+import '../../../data/repositories/customer_repository.dart';
+import '../../../data/repositories/customer_transaction_repository.dart';
 
 class CustomerDetailsScreen extends StatefulWidget {
   const CustomerDetailsScreen({
@@ -31,7 +34,6 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
   int? _balance;
   bool _isLoading = true;
   String? _loadError;
-  final TextEditingController _searchController = TextEditingController();
 
   @override
   void initState() {
@@ -113,14 +115,14 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
     if (result == null) return;
     try {
       if (type == 'debt') {
-        await _customerRepo.createDebt(
+        await _txRepo.createDebt(
           storeId: widget.user.storeId,
           customerId: widget.customerId,
           amountFils: result.amount,
           createdBy: widget.user.uid,
         );
       } else {
-        await _customerRepo.createPayment(
+        await _txRepo.createPayment(
           storeId: widget.user.storeId,
           customerId: widget.customerId,
           amountFils: result.amount,
@@ -128,7 +130,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
         );
       }
       _showMessage(type == 'debt' ? 'تم إضافة الدين' : 'تم تسجيل المدفوعة');
-      _loadTransactions();
+      await _loadTransactions();
     } catch (e) {
       String message;
       if (e.toString().contains('Must be > 0')) {
@@ -143,86 +145,91 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
   }
 
   Future<({int amount, String? note})?> _showTransactionFormInternal2(
-      String type) async {
-    final _amountController = TextEditingController();
-    final _noteController = TextEditingController();
-    final _saving = ValueNotifier<bool>(false);
+    String type,
+  ) async {
+    final amountController = TextEditingController();
+    final noteController = TextEditingController();
+    final saving = ValueNotifier<bool>(false);
+    final formKey = GlobalKey<FormState>();
 
-    return showDialog<({int amount, String? note})>(
+    final result = await showDialog<({int amount, String? note})>(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: Text(
           type == 'debt' ? 'إضافة دين' : 'إضافة مدفوعة',
         ),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextFormField(
-                controller: _amountController,
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: false),
-                decoration: const InputDecoration(
-                  labelText: 'المبلغ (فلس)',
-                  border: OutlineInputBorder(),
+        content: Form(
+          key: formKey,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextFormField(
+                  controller: amountController,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: false),
+                  decoration: const InputDecoration(
+                    labelText: 'المبلغ (فلس)',
+                    border: OutlineInputBorder(),
+                  ),
+                  validator: (value) {
+                    final amount = value?.trim() ?? '';
+                    if (amount.isEmpty) return 'المبلغ مطلوب.';
+                    final amountInt = int.tryParse(amount);
+                    if (amountInt == null) return 'مبلغ غير صحيح.';
+                    if (amountInt <= 0) return 'يجب أن يكون أكبر من صفر.';
+                    return null;
+                  },
                 ),
-                validator: (value) {
-                  final amount = value?.trim();
-                  if (amount == null || amount.isEmpty)
-                    return 'المبلغ مطلوب.';
-                  final amountInt = int.tryParse(amount);
-                  if (amountInt == null) return 'مبلغ غير صحيح.';
-                  if (amountInt <= 0)
-                    return 'يجب أن يكون أكبر من صفر.';
-                  return null;
-                },
-              ),
-              const SizedBox(height: 12),
-              if (type == 'payment') ...[
-                const SizedBox(height: 8),
-                const Text(
-                  'لا يتجاوز المبلغ الرصيد الحالي',
-                  style: TextStyle(color: Colors.red),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  _balance != null
-                      ? 'الرصيد: ${_balance} Fils'
-                      : 'جاري حساب الرصيد...',
+                const SizedBox(height: 12),
+                if (type == 'payment') ...[
+                  const SizedBox(height: 8),
+                  const Text(
+                    'لا يتجاوز المبلغ الرصيد الحالي',
+                    style: TextStyle(color: Colors.red),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    _balance != null
+                        ? 'الرصيد: $_balance Fils'
+                        : 'جاري حساب الرصيد...',
+                  ),
+                ],
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: noteController,
+                  decoration: const InputDecoration(
+                    labelText: 'ملاحظة (اختياري)',
+                    border: OutlineInputBorder(),
+                  ),
                 ),
               ],
-              const SizedBox(height: 12),
-              TextFormField(
-                controller: _noteController,
-                decoration: const InputDecoration(
-                  labelText: 'ملاحظة (اختياري)',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-            ],
+            ),
           ),
         ),
         actions: [
           TextButton(
-            onPressed: _saving.isNotAlive
-                ? null
-                : () => Navigator.of(context).pop(),
+            onPressed: () => Navigator.of(dialogContext).pop(),
             child: const Text('إلغاء'),
           ),
           ValueListenableBuilder<bool>(
-            valueListenable: _saving,
-            builder: (context, saving, child) => FilledButton(
-              onPressed: saving ? null : () {
-                if (_amountController.text.trim().isEmpty) return;
-                if (int.tryParse(_amountController.text.trim()) == null) return;
-                Navigator.of(context).pop((
-                  amount: int.parse(_amountController.text.trim()),
-                  note: _noteController.text.trim().isEmpty
-                      ? null
-                      : _noteController.text.trim(),
-                ));
-              },
-              child: saving
+            valueListenable: saving,
+            builder: (context, isSaving, child) => FilledButton(
+              onPressed: isSaving
+                  ? null
+                  : () {
+                      if (!formKey.currentState!.validate()) return;
+                      final parsed = int.tryParse(amountController.text.trim());
+                      if (parsed == null) return;
+                      saving.value = true;
+                      Navigator.of(dialogContext).pop((
+                        amount: parsed,
+                        note: noteController.text.trim().isEmpty
+                            ? null
+                            : noteController.text.trim(),
+                      ));
+                    },
+              child: isSaving
                   ? const SizedBox.square(
                       dimension: 18,
                       child: CircularProgressIndicator(strokeWidth: 2),
@@ -233,6 +240,8 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
         ],
       ),
     );
+    saving.dispose();
+    return result;
   }
 
   // Admin: cancel transaction
@@ -263,7 +272,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
     if (confirmed != true) return;
 
     try {
-      await _customerRepo.adminCancelTransaction(
+      await _txRepo.adminCancelTransaction(
         storeId: widget.user.storeId,
         customerId: widget.customerId,
         transactionId: transaction.transactionId,
@@ -308,7 +317,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                       ],
                     ),
                   )
-                : const Center(child: Text('لا توجد بيانات للعميل'));
+                : const Center(child: Text('لا توجد بيانات للعميل'))
       );
     }
 
@@ -440,9 +449,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
     final isCancelled = tx.status.value == CustomerTransactionStatus.cancelled.value;
     final typeLabel = tx.type.value == 'DEBT' ? 'دين' : 'مدفوعة';
     final statusText = isCancelled ? 'ملغاة' : 'نشطة';
-    final statusColor = isCancelled
-        ? Theme.of(context).colorScheme.error
-        : Theme.of(context).colorScheme.primary;
+    final isAdmin = widget.user.isAdmin;
 
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
@@ -453,9 +460,9 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
             Icon(
               isCancelled
                   ? Icons.cancel_outlined
-                  : (tx.type.value == 'DEBT'
-                      ? Icons.add_chart_outlined
-                      : Icons.remove_chart_outlined),
+                  : tx.type.value == 'DEBT'
+                      ? Icons.add_chart
+                      : Icons.remove_circle_outline,
             ),
             const SizedBox(width: 8),
             Expanded(
@@ -467,7 +474,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                     style: const TextStyle(fontWeight: FontWeight.w500),
                   ),
                   Text(
-                    '${statusText} • ${_formatDate(tx.createdAt)}',
+                    '$statusText • ${_formatDate(tx.createdAt)}',
                     style: TextStyle(
                       color: Colors.grey[600],
                       fontSize: 12,
@@ -491,6 +498,10 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
     );
   }
 
+  String _formatDate(Timestamp timestamp) {
+    return DateFormat('dd/MM/yyyy - HH:mm').format(timestamp.toDate());
+  }
+
   Widget _buildActionButtons(bool isAdmin) {
     final canAddDebt = _canAddDebt();
     return Row(
@@ -510,7 +521,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
             label: const Text('مدفوعة'),
           ),
         ],
-        if (!isAdmin && isEmployee) ...[
+        if (!isAdmin && widget.user.isEmployee) ...[
           const SizedBox(width: 8),
           FilledButton.icon(
             onPressed: canAddDebt ? () => _showTransactionForm('payment') : null,

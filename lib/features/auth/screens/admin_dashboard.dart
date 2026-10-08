@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../data/models/user_model.dart';
 import '../../companies/screens/company_management_screen.dart';
+import '../../customers/screens/customer_management_screen.dart';
 import 'employee_management_screen.dart';
 import 'store_join_code_screen.dart';
 import '../../products/screens/product_list_screen.dart';
@@ -68,6 +69,19 @@ class AdminDashboard extends StatelessWidget {
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.of(context).push<void>(
               MaterialPageRoute(builder: (_) => ProductListScreen(user: user)),
+            ),
+          ),
+        ),
+        Card(
+          child: ListTile(
+            leading: const CircleAvatar(child: Icon(Icons.people_outlined)),
+            title: const Text('إدارة العملاء'),
+            subtitle: const Text('عرض وتعديل بيانات العملاء'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push<void>(
+              MaterialPageRoute(
+                builder: (_) => CustomerManagementScreen(user: user),
+              ),
             ),
           ),
         ),

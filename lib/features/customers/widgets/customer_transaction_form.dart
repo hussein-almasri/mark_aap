@@ -1,8 +1,8 @@
-import 'package:flutter/material';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/material.dart';
 
 import '../../../data/models/customer_model.dart';
-import '../../../data/repositories/customer_repository.dart';
-import '../../../data/models/customer_transaction_model.dart';
+import '../../../data/repositories/customer_transaction_repository.dart';
 
 class InsufficientBalanceException implements Exception {
   const InsufficientBalanceException();
@@ -10,95 +10,90 @@ class InsufficientBalanceException implements Exception {
 
 Future<({int amount, String? note})?> _showTransactionForm(
   BuildContext context,
-  CustomerModel customer,
-  {required String storeId,
+  CustomerModel customer, {
+  required String storeId,
   required String createdBy,
   required String transactionType,
 }) async {
-  final _amountController = TextEditingController();
-  final _noteController = TextEditingController();
-  final _saving = ValueNotifier<bool>(false);
+  final amountController = TextEditingController();
+  final noteController = TextEditingController();
+  final formKey = GlobalKey<FormState>();
+  final saving = ValueNotifier<bool>(false);
 
-  double? maxAmount;
-  if (transactionType == 'debt') {
-    if (!customer.debtEnabled) {
-      // Show info but allow override
-    }
-    maxAmount = null; // Debt can always be added when debtEnabled
-  } else {
-    // Payment: cannot exceed current balance
-    // Balance = active DEBT - active PAYMENT
-    // We'll compute it simply: show a message about current balance
-    maxAmount = null; // Rules will enforce
-  }
-
-  return showDialog<({int amount, String? note})>(
+  final result = await showDialog<({int amount, String? note})>(
     context: context,
-    builder: (_) => AlertDialog(
+    builder: (dialogContext) => AlertDialog(
       title: Text(
-        transactionType == 'debt'
-            ? 'إضافة دين'
-            : 'إضافة مدفوعة',
+        transactionType == 'debt' ? 'إضافة دين' : 'إضافة مدفوعة',
       ),
-      content: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextFormField(
-              controller: _amountController,
-              keyboardType: const TextInputType.numberWithOptions(decimal: false),
-              decoration: const InputDecoration(
-                labelText: 'المبلغ (فلس)',
-                border: OutlineInputBorder(),
+      content: Form(
+        key: formKey,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextFormField(
+                controller: amountController,
+                keyboardType: const TextInputType.numberWithOptions(decimal: false),
+                decoration: const InputDecoration(
+                  labelText: 'المبلغ (فلس)',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) {
+                  final text = value?.trim() ?? '';
+                  if (text.isEmpty) return 'المبلغ مطلوب.';
+                  final amount = int.tryParse(text);
+                  if (amount == null) return 'مبلغ غير صحيح.';
+                  if (amount <= 0) return 'يجب أن يكون أكبر من صفر.';
+                  if (transactionType == 'payment' && customer.debtEnabled == false) {
+                    return null;
+                  }
+                  return null;
+                },
               ),
-              validator: (value) {
-                final amount = value?.trim();
-                if (amount == null || amount.isEmpty) return 'المبلغ مطلوب.';
-                final amountInt = int.tryParse(amount);
-                if (amountInt == null) return 'مبلغ غير صحيح.';
-                if (amountInt <= 0) return 'يجب أن يكون أكبر من صفر.';
-                return null;
-              },
-            ),
-            if (transactionType == 'payment') ...const [
+              if (transactionType == 'payment') ...[
+                const SizedBox(height: 12),
+                const Text(
+                  'لا يتجاوز المبلغ الرصيد الحالي',
+                  style: TextStyle(color: Colors.red),
+                ),
+              ],
               const SizedBox(height: 12),
-              const Text(
-                'لا يتجاوز المبلغ الرصيد الحالي',
-                style: TextStyle(color: Colors.red),
+              TextFormField(
+                controller: noteController,
+                decoration: const InputDecoration(
+                  labelText: 'ملاحظة (اختياري)',
+                  border: OutlineInputBorder(),
+                ),
               ),
             ],
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _noteController,
-              decoration: const InputDecoration(
-                labelText: 'ملاحظة (اختياري)',
-                border: OutlineInputBorder(),
-              ),
-            ),
-          ],
+          ),
         ),
       ),
       actions: [
         TextButton(
-          onPressed: _saving.isNotAlive ? null : () => Navigator.of(context).pop(),
+          onPressed: () => Navigator.of(dialogContext).pop(),
           child: const Text('إلغاء'),
         ),
         ValueListenableBuilder<bool>(
-          valueListenable: _saving,
-          builder: (context, saving, child) => FilledButton(
-            onPressed: saving ? null : () {
-              if (!_amountController.text.trim().isEmpty &&
-                  int.tryParse(_amountController.text.trim()) != null) {
-                final amount = int.parse(_amountController.text.trim());
-                Navigator.of(context).pop((
-                  amount: amount,
-                  note: _noteController.text.trim().isEmpty
-                      ? null
-                      : _noteController.text.trim(),
-                ));
-              }
-            },
-            child: saving
+          valueListenable: saving,
+          builder: (context, isSaving, child) => FilledButton(
+            onPressed: isSaving
+                ? null
+                : () {
+                    if (!formKey.currentState!.validate()) return;
+                    final rawValue = amountController.text.trim();
+                    final parsedAmount = int.tryParse(rawValue);
+                    if (parsedAmount == null) return;
+                    saving.value = true;
+                    Navigator.of(dialogContext).pop((
+                      amount: parsedAmount,
+                      note: noteController.text.trim().isEmpty
+                          ? null
+                          : noteController.text.trim(),
+                    ));
+                  },
+            child: isSaving
                 ? const SizedBox.square(
                     dimension: 18,
                     child: CircularProgressIndicator(strokeWidth: 2),
@@ -109,6 +104,9 @@ Future<({int amount, String? note})?> _showTransactionForm(
       ],
     ),
   );
+
+  saving.dispose();
+  return result;
 }
 
 Future<void> showAddDebtDialog(
@@ -117,44 +115,45 @@ Future<void> showAddDebtDialog(
   String customerId,
   String createdBy,
 ) async {
-  final result = await _showTransactionForm(context,
-    // We'll fetch customer inside or pass it
-    CustomerModel(
-      customerId: customerId,
-      name: '',
-      debtEnabled: false,
-      isActive: true,
-      createdAt: Timestamp.now(),
-      updatedAt: Timestamp.now(),
-      createdBy: createdBy,
-      updatedBy: createdBy,
-    ),
+  final customer = CustomerModel(
+    customerId: customerId,
+    name: 'Customer',
+    debtEnabled: true,
+    isActive: true,
+    createdAt: Timestamp.now(),
+    updatedAt: Timestamp.now(),
+    createdBy: createdBy,
+    updatedBy: createdBy,
+  );
+
+  final result = await _showTransactionForm(
+    context,
+    customer,
     storeId: storeId,
     createdBy: createdBy,
     transactionType: 'debt',
   );
   if (result == null) return;
+
   try {
-    await CustomerRepository().createDebt(
+    await CustomerTransactionRepository().createDebt(
       storeId: storeId,
       customerId: customerId,
       amountFils: result.amount,
       createdBy: createdBy,
     );
-    if (!mounted) return;
+
+    if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('تم إضافة الدين')),
     );
   } catch (e) {
-    if (!mounted) return;
-    String message;
-    if (e.toString().contains('debtEnabled')) {
-      message = 'خدمة الدين معطلة لهذا العميل';
-    } else if (e.toString().contains('Must be > 0')) {
-      message = 'المبلغ يجب أن يكون أكبر من صفر';
-    } else {
-      message = 'تعذر إضافة الدين';
-    }
+    if (!context.mounted) return;
+    final message = e.toString().contains('Must be > 0')
+        ? 'المبلغ يجب أن يكون أكبر من صفر'
+        : e.toString().contains('debtEnabled')
+            ? 'خدمة الدين معطلة لهذا العميل'
+            : 'تعذر إضافة الدين';
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message)),
     );
@@ -167,41 +166,43 @@ Future<void> showAddPaymentDialog(
   String customerId,
   String createdBy,
 ) async {
-  final result = await _showTransactionForm(context,
-    CustomerModel(
-      customerId: customerId,
-      name: '',
-      debtEnabled: false,
-      isActive: true,
-      createdAt: Timestamp.now(),
-      updatedAt: Timestamp.now(),
-      createdBy: createdBy,
-      updatedBy: createdBy,
-    ),
+  final customer = CustomerModel(
+    customerId: customerId,
+    name: 'Customer',
+    debtEnabled: true,
+    isActive: true,
+    createdAt: Timestamp.now(),
+    updatedAt: Timestamp.now(),
+    createdBy: createdBy,
+    updatedBy: createdBy,
+  );
+
+  final result = await _showTransactionForm(
+    context,
+    customer,
     storeId: storeId,
     createdBy: createdBy,
     transactionType: 'payment',
   );
   if (result == null) return;
+
   try {
-    await CustomerRepository().createPayment(
+    await CustomerTransactionRepository().createPayment(
       storeId: storeId,
       customerId: customerId,
       amountFils: result.amount,
       createdBy: createdBy,
     );
-    if (!mounted) return;
+
+    if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('تم تسجيل المدفوعة')),
     );
   } catch (e) {
-    if (!mounted) return;
-    String message;
-    if (e.toString().contains('Must be > 0')) {
-      message = 'المبلغ يجب أن يكون أكبر من صفر';
-    } else {
-      message = 'تعذر تسجيل المدفوعة';
-    }
+    if (!context.mounted) return;
+    final message = e.toString().contains('Must be > 0')
+        ? 'المبلغ يجب أن يكون أكبر من صفر'
+        : 'تعذر تسجيل المدفوعة';
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message)),
     );

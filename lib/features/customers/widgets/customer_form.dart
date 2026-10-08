@@ -1,4 +1,5 @@
-import 'package:flutter/material';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/material.dart';
 
 import '../../../data/models/customer_model.dart';
 import '../../../data/repositories/customer_repository.dart';
@@ -12,36 +13,36 @@ class CustomerNotFoundException implements Exception {
 }
 
 Future<CustomerModel?> _showCustomerForm(
-  BuildContext context,
-  {CustomerModel? existingCustomer,
+  BuildContext context, {
+  CustomerModel? existingCustomer,
   required String storeId,
   required String createdBy,
 }) async {
-  final _formKey = GlobalKey<FormState>();
-  final _nameController = TextEditingController(
+  final formKey = GlobalKey<FormState>();
+  final nameController = TextEditingController(
     text: existingCustomer?.name ?? '',
   );
-  final _phoneController = TextEditingController(
+  final phoneController = TextEditingController(
     text: existingCustomer?.phone ?? '',
   );
-  final _debtEnabledController = ValueNotifier<bool>(
+  final debtEnabledController = ValueNotifier<bool>(
     existingCustomer?.debtEnabled ?? false,
   );
-  final _saving = ValueNotifier<bool>(false);
+  final saving = ValueNotifier<bool>(false);
 
-  return showDialog<CustomerModel>(
+  final result = await showDialog<CustomerModel>(
     context: context,
-    builder: (_) => AlertDialog(
+    builder: (dialogContext) => AlertDialog(
       title: Text(
         existingCustomer == null ? 'إضافة عميل' : 'تعديل عميل',
       ),
       content: Form(
-        key: _formKey,
+        key: formKey,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             TextFormField(
-              controller: _nameController,
+              controller: nameController,
               autofocus: true,
               decoration: const InputDecoration(
                 labelText: 'اسم العميل',
@@ -56,7 +57,7 @@ Future<CustomerModel?> _showCustomerForm(
             ),
             const SizedBox(height: 12),
             TextFormField(
-              controller: _phoneController,
+              controller: phoneController,
               keyboardType: TextInputType.phone,
               decoration: const InputDecoration(
                 labelText: 'رقم الهاتف (اختياري)',
@@ -68,13 +69,13 @@ Future<CustomerModel?> _showCustomerForm(
               children: [
                 const Text('تمكين الدين'),
                 ValueListenableBuilder<bool>(
-                  valueListenable: _debtEnabledController,
+                  valueListenable: debtEnabledController,
                   builder: (context, value, child) => Switch(
                     value: value,
-                    onChanged: _saving.isNotAlive
+                    onChanged: saving.value
                         ? null
                         : (bool newValue) {
-                            _debtEnabledController.value = newValue;
+                            debtEnabledController.value = newValue;
                           },
                   ),
                 ),
@@ -85,35 +86,37 @@ Future<CustomerModel?> _showCustomerForm(
       ),
       actions: [
         TextButton(
-          onPressed: _saving.isNotAlive ? null : () => Navigator.of(context).pop(),
+          onPressed: saving.value ? null : () => Navigator.of(dialogContext).pop(),
           child: const Text('إلغاء'),
         ),
         ValueListenableBuilder<bool>(
-          valueListenable: _saving,
-          builder: (context, saving, child) => FilledButton(
-            onPressed: saving ? null : () {
-              if (!_formKey.currentState!.validate()) return;
-              _saving.value = true;
-              final name = _nameController.text.trim();
-              final phone = _phoneController.text.trim().isEmpty
-                  ? null
-                  : _phoneController.text.trim();
-              final debtEnabled = _debtEnabledController.value;
-              Navigator.of(context).pop(
-                CustomerModel(
-                  customerId: existingCustomer?.customerId ?? '',
-                  name: name,
-                  phone: phone,
-                  debtEnabled: debtEnabled,
-                  isActive: true,
-                  createdAt: Timestamp.now(),
-                  updatedAt: Timestamp.now(),
-                  createdBy: createdBy,
-                  updatedBy: createdBy,
-                ),
-              );
-            },
-            child: saving
+          valueListenable: saving,
+          builder: (context, isSaving, child) => FilledButton(
+            onPressed: isSaving
+                ? null
+                : () {
+                    if (!formKey.currentState!.validate()) return;
+                    saving.value = true;
+                    final name = nameController.text.trim();
+                    final phone = phoneController.text.trim().isEmpty
+                        ? null
+                        : phoneController.text.trim();
+                    final debtEnabled = debtEnabledController.value;
+                    Navigator.of(dialogContext).pop(
+                      CustomerModel(
+                        customerId: existingCustomer?.customerId ?? '',
+                        name: name,
+                        phone: phone,
+                        debtEnabled: debtEnabled,
+                        isActive: true,
+                        createdAt: Timestamp.now(),
+                        updatedAt: Timestamp.now(),
+                        createdBy: createdBy,
+                        updatedBy: createdBy,
+                      ),
+                    );
+                  },
+            child: isSaving
                 ? const SizedBox.square(
                     dimension: 18,
                     child: CircularProgressIndicator(strokeWidth: 2),
@@ -124,6 +127,11 @@ Future<CustomerModel?> _showCustomerForm(
       ],
     ),
   );
+  debtEnabledController.dispose();
+  saving.dispose();
+  nameController.dispose();
+  phoneController.dispose();
+  return result;
 }
 
 Future<void> showAddCustomerDialog(
@@ -131,9 +139,8 @@ Future<void> showAddCustomerDialog(
   String storeId,
   String createdBy,
 ) async {
-  final existingCustomer;
   final result = await _showCustomerForm(context,
-      existingCustomer: existingCustomer, storeId: storeId, createdBy: createdBy);
+      storeId: storeId, createdBy: createdBy);
   if (result == null) return;
   try {
     await CustomerRepository().createCustomer(
@@ -143,17 +150,17 @@ Future<void> showAddCustomerDialog(
       debtEnabled: result.debtEnabled,
       createdBy: createdBy,
     );
-    if (!mounted) return;
+    if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('تم إضافة العميل успешно')),
+      const SnackBar(content: Text('تم إضافة العميل بنجاح')),
     );
   } on CustomerAlreadyExistsException {
-    if (!mounted) return;
+    if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('اسم العميل مستخدم بالفعل')),
     );
   } catch (_) {
-    if (!mounted) return;
+    if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('تعذر إضافة العميل')),
     );
@@ -180,17 +187,17 @@ Future<void> showEditCustomerDialog(
       debtEnabled: result.debtEnabled,
       updatedBy: updatedBy,
     );
-    if (!mounted) return;
+    if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('تم تحديث بيانات العميل')),
     );
   } on CustomerAlreadyExistsException {
-    if (!mounted) return;
+    if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('اسم العميل مستخدم already')),
+      const SnackBar(content: Text('اسم العميل مستخدم بالفعل')),
     );
   } catch (_) {
-    if (!mounted) return;
+    if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('تعذر تحديث بيانات العميل')),
     );
