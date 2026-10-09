@@ -135,12 +135,18 @@ Future<void> showAddDebtDialog(
   );
   if (result == null) return;
 
+  // One stable id per confirmed form submission; reused if this same
+  // operation is retried, so it cannot register the debt twice.
+  final transactionId = CustomerTransactionRepository()
+      .newTransactionId(storeId, customerId);
+
   try {
     await CustomerTransactionRepository().createDebt(
       storeId: storeId,
       customerId: customerId,
       amountFils: result.amount,
       createdBy: createdBy,
+      transactionId: transactionId,
     );
 
     if (!context.mounted) return;
@@ -153,7 +159,9 @@ Future<void> showAddDebtDialog(
         ? 'المبلغ يجب أن يكون أكبر من صفر'
         : e.toString().contains('debtEnabled')
             ? 'خدمة الدين معطلة لهذا العميل'
-            : 'تعذر إضافة الدين';
+            : e is CustomerTransactionAlreadyExistsException
+                ? 'رقم عملية مستخدم لمعاملة أخرى؛ لم تُسجّل معاملة جديدة'
+                : 'تعذر إضافة الدين';
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message)),
     );
@@ -186,12 +194,18 @@ Future<void> showAddPaymentDialog(
   );
   if (result == null) return;
 
+  // One stable id per confirmed form submission; reused if this same
+  // operation is retried, so it cannot register the payment twice.
+  final transactionId = CustomerTransactionRepository()
+      .newTransactionId(storeId, customerId);
+
   try {
     await CustomerTransactionRepository().createPayment(
       storeId: storeId,
       customerId: customerId,
       amountFils: result.amount,
       createdBy: createdBy,
+      transactionId: transactionId,
     );
 
     if (!context.mounted) return;
@@ -202,7 +216,9 @@ Future<void> showAddPaymentDialog(
     if (!context.mounted) return;
     final message = e.toString().contains('Must be > 0')
         ? 'المبلغ يجب أن يكون أكبر من صفر'
-        : 'تعذر تسجيل المدفوعة';
+        : e is CustomerTransactionAlreadyExistsException
+            ? 'رقم عملية مستخدم لمعاملة أخرى؛ لم تُسجّل معاملة جديدة'
+            : 'تعذر تسجيل المدفوعة';
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message)),
     );

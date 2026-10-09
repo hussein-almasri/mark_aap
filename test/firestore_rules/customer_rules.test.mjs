@@ -651,3 +651,108 @@ test('Transaction documents cannot be deleted', async () => {
   await assertSucceeds(setDoc(TXN(db, 'store-1', 'customer-1', 'debt-1'), debtPayload('admin-1')));
   await assertFails(deleteDoc(TXN(db, 'store-1', 'customer-1', 'debt-1')));
 });
+
+// ---------------------------------------------------------------------------
+// Phase 4J: customer transaction retry safety
+//
+// These mirror the repository's get-then-conditional-set protocol
+// (CustomerTransactionRepository.createDebt/createPayment) so they prove the
+// idempotency guard works under the CURRENT ruleset with no rules change.
+// ---------------------------------------------------------------------------
+
+/**
+ * Mirrors CustomerTransactionRepository.createDebt with a caller-supplied
+ * transactionId: read before write; create if absent; if present and it is
+ * the same logical operation, return without writing (idempotent replay);
+ * if present but different, throw.
+ */
+async function repoCreateDebt(db, txnId, { amountFils, createdBy }) {
+  const ref = TXN(db, 'store-1', 'customer-1', txnId);
+  return runTransaction(db, async (tx) => {
+    const existing = await tx.get(ref);
+    if (existing.exists()) {
+      const data = existing.data();
+      if (data.type === 'DEBT' &&
+          data.amountFils === amountFils &&
+          data.createdBy === createdBy) {
+        return txnId; // idempotent replay: no write
+      }
+      const err = new Error('CustomerTransactionAlreadyExists');
+      err.code = 'already-exists';
+      throw err;
+    }
+    tx.set(ref, debtPayload(createdBy, { amountFils }));
+    return txnId;
+  });
+}
+
+async function countDebts(db) {
+  const snap = await getDocs(collection(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions'));
+  return snap.size;
+}
+
+// 4.1 Retrying the same logical operation (same stable id + same payload)
+// must NOT create a second financial record.
+test('Retrying same operation does not duplicate the debt', async () => {
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await createCustomerBaseline(db);
+
+  const first = await repoCreateDebt(db, 'op-stable-1', { amountFils: 5000, createdBy: 'admin-1' });
+  const second = await repoCreateDebt(db, 'op-stable-1', { amountFils: 5000, createdBy: 'admin-1' });
+
+  assert.equal(first, second, 'replay must return the same transaction id');
+  assert.equal(await countDebts(db), 1, 'replay must not post a second debt');
+
+  const doc = await getDoc(TXN(db, 'store-1', 'customer-1', 'op-stable-1'));
+  assert.equal(doc.data().amountFils, 5000, 'financial effect must be unchanged');
+  assert.equal(doc.data().status, 'ACTIVE');
+});
+
+// 4.2 Two separate operations (distinct ids) are recorded independently.
+test('Two separate operations are recorded independently', async () => {
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await createCustomerBaseline(db);
+
+  await repoCreateDebt(db, 'op-a', { amountFils: 1000, createdBy: 'admin-1' });
+  await repoCreateDebt(db, 'op-b', { amountFils: 2000, createdBy: 'admin-1' });
+
+  assert.equal(await countDebts(db), 2, 'two distinct operations must both be recorded');
+
+  const a = await getDoc(TXN(db, 'store-1', 'customer-1', 'op-a'));
+  const b = await getDoc(TXN(db, 'store-1', 'customer-1', 'op-b'));
+  assert.equal(a.data().amountFils, 1000);
+  assert.equal(b.data().amountFils, 2000);
+});
+
+// 4.3 Reusing a stable id for a DIFFERENT operation must not silently create
+// or overwrite a second financial record.
+test('Reusing an id for a different operation is rejected explicitly', async () => {
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await createCustomerBaseline(db);
+
+  await repoCreateDebt(db, 'op-shared', { amountFils: 5000, createdBy: 'admin-1' });
+
+  // Same id, different amount -> must throw, not write.
+  await assert.rejects(
+    repoCreateDebt(db, 'op-shared', { amountFils: 9999, createdBy: 'admin-1' }),
+    /CustomerTransactionAlreadyExists/,
+  );
+
+  const doc = await getDoc(TXN(db, 'store-1', 'customer-1', 'op-shared'));
+  assert.equal(doc.data().amountFils, 5000, 'original financial record must be untouched');
+  assert.equal(await countDebts(db), 1, 'no second record may be created');
+});
+
+// 4.4 Defence in depth: even without the repository guard, the ruleset denies
+// a blind overwrite of an existing ACTIVE transaction, so a stray retry can
+// never mutate a settled record.
+test('Rules deny overwriting an existing ACTIVE transaction', async () => {
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await createCustomerBaseline(db);
+  await assertSucceeds(setDoc(TXN(db, 'store-1', 'customer-1', 'op-x'), debtPayload('admin-1', { amountFils: 5000 })));
+  // setDoc over an existing doc evaluates as an update; the update rule only
+  // permits admin cancellation, so this is denied.
+  await assertFails(setDoc(TXN(db, 'store-1', 'customer-1', 'op-x'), debtPayload('admin-1', { amountFils: 9999 })));
+  const doc = await getDoc(TXN(db, 'store-1', 'customer-1', 'op-x'));
+  assert.equal(doc.data().amountFils, 5000, 'settled record must keep its original amount');
+});

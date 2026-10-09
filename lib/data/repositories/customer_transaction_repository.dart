@@ -33,6 +33,29 @@ class CustomerTransactionRepository {
   CollectionReference<Map<String, dynamic>> _customers(String storeId) =>
       _firestore.collection('stores').doc(storeId).collection('customers');
 
+  /// Mints a fresh transaction id locally (no network round-trip).
+  ///
+  /// Callers should mint one id per *logical* operation (e.g. one confirmed
+  /// form submission) and pass it to [createDebt]/[createPayment]. Retrying
+  /// the same operation with the same id is idempotent: it will not post a
+  /// second financial effect. A genuinely new operation must mint a new id.
+  String newTransactionId(String storeId, String customerId) =>
+      _transactions(storeId, customerId).doc().id;
+
+  /// True when [existing] is the same logical operation as the one being
+  /// retried, i.e. replaying it would not change the financial effect.
+  static bool _isSameOperation(
+    Map<String, dynamic>? existing, {
+    required String type,
+    required int amountFils,
+    required String createdBy,
+  }) {
+    if (existing == null) return false;
+    return existing['type'] == type &&
+        existing['amountFils'] == amountFils &&
+        existing['createdBy'] == createdBy;
+  }
+
   Stream<List<CustomerTransactionModel>> watchTransactions(
       String storeId, String customerId) {
     return _transactions(storeId, customerId)
@@ -49,6 +72,7 @@ class CustomerTransactionRepository {
     required String customerId,
     required int amountFils,
     required String createdBy,
+    String? transactionId,
   }) async {
     final customerDoc =
         await _customers(storeId).doc(customerId).get();
@@ -73,9 +97,29 @@ class CustomerTransactionRepository {
       throw ArgumentError.value(amountFils, 'amountFils', 'Must be > 0.');
     }
 
-    final debtRef = _transactions(storeId, customerId).doc();
+    final debtRef = transactionId == null
+        ? _transactions(storeId, customerId).doc()
+        : _transactions(storeId, customerId).doc(transactionId);
 
     return _firestore.runTransaction((transaction) async {
+      // When the caller supplied a stable id, read before writing so a retry
+      // of the same logical operation cannot post a second financial effect.
+      if (transactionId != null) {
+        final existing = await transaction.get(debtRef);
+        if (existing.exists) {
+          final data = existing.data();
+          if (_isSameOperation(data,
+              type: 'DEBT', amountFils: amountFils, createdBy: createdBy)) {
+            // Idempotent replay: the debt is already recorded. Commit a
+            // read-only transaction and report success.
+            return debtRef.id;
+          }
+          // Same id but a different operation: refuse explicitly rather than
+          // silently creating or overwriting a second financial record.
+          throw const CustomerTransactionAlreadyExistsException();
+        }
+      }
+
       transaction.set(debtRef, {
         'type': 'DEBT',
         'amountFils': amountFils,
@@ -97,6 +141,7 @@ class CustomerTransactionRepository {
     required String customerId,
     required int amountFils,
     required String createdBy,
+    String? transactionId,
   }) async {
     final customerDoc =
         await _customers(storeId).doc(customerId).get();
@@ -112,9 +157,25 @@ class CustomerTransactionRepository {
 
     // Payment is allowed even when debtEnabled == false.
     // Balance validation is enforced by Firestore Rules.
-    final paymentRef = _transactions(storeId, customerId).doc();
+    final paymentRef = transactionId == null
+        ? _transactions(storeId, customerId).doc()
+        : _transactions(storeId, customerId).doc(transactionId);
 
     return _firestore.runTransaction((transaction) async {
+      // Same idempotent-replay guard as createDebt: a retried payment with a
+      // stable id must not debit the customer twice.
+      if (transactionId != null) {
+        final existing = await transaction.get(paymentRef);
+        if (existing.exists) {
+          final data = existing.data();
+          if (_isSameOperation(data,
+              type: 'PAYMENT', amountFils: amountFils, createdBy: createdBy)) {
+            return paymentRef.id;
+          }
+          throw const CustomerTransactionAlreadyExistsException();
+        }
+      }
+
       transaction.set(paymentRef, {
         'type': 'PAYMENT',
         'amountFils': amountFils,

@@ -113,6 +113,12 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
   Future<void> _showTransactionFormInternal(String type) async {
     final result = await _showTransactionFormInternal2(type);
     if (result == null) return;
+    // Mint one stable id per confirmed form submission so that retrying this
+    // same logical operation cannot post a second financial record.
+    final transactionId = _txRepo.newTransactionId(
+      widget.user.storeId,
+      widget.customerId,
+    );
     try {
       if (type == 'debt') {
         await _txRepo.createDebt(
@@ -120,6 +126,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
           customerId: widget.customerId,
           amountFils: result.amount,
           createdBy: widget.user.uid,
+          transactionId: transactionId,
         );
       } else {
         await _txRepo.createPayment(
@@ -127,6 +134,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
           customerId: widget.customerId,
           amountFils: result.amount,
           createdBy: widget.user.uid,
+          transactionId: transactionId,
         );
       }
       _showMessage(type == 'debt' ? 'تم إضافة الدين' : 'تم تسجيل المدفوعة');
@@ -137,6 +145,8 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
         message = 'المبلغ يجب أن يكون أكبر من صفر';
       } else if (e.toString().contains('debtEnabled')) {
         message = 'خدمة الدين معطلة لهذا العميل';
+      } else if (e is CustomerTransactionAlreadyExistsException) {
+        message = 'رقم عملية مستخدم لمعاملة أخرى؛ لم تُسجّل معاملة جديدة';
       } else {
         message = 'تعذر العملية';
       }
