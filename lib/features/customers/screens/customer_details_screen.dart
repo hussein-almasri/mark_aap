@@ -127,6 +127,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
           amountFils: result.amount,
           createdBy: widget.user.uid,
           transactionId: transactionId,
+          note: result.note,
         );
       } else {
         await _txRepo.createPayment(
@@ -135,6 +136,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
           amountFils: result.amount,
           createdBy: widget.user.uid,
           transactionId: transactionId,
+          note: result.note,
         );
       }
       _showMessage(type == 'debt' ? 'تم إضافة الدين' : 'تم تسجيل المدفوعة');

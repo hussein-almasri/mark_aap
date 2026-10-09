@@ -56,6 +56,14 @@ class CustomerTransactionRepository {
         existing['createdBy'] == createdBy;
   }
 
+  /// Normalises a caller-supplied note: blank/whitespace-only input is stored
+  /// as `null` so documents never carry empty strings.
+  static String? _cleanNote(String? note) {
+    if (note == null) return null;
+    final trimmed = note.trim();
+    return trimmed.isEmpty ? null : trimmed;
+  }
+
   Stream<List<CustomerTransactionModel>> watchTransactions(
       String storeId, String customerId) {
     return _transactions(storeId, customerId)
@@ -187,7 +195,7 @@ class CustomerTransactionRepository {
         'cancelledAt': FieldValue.delete(),
         'cancelledBy': FieldValue.delete(),
         'cancellationReason': FieldValue.delete(),
-        'note': null,
+        'note': _cleanNote(note),
       });
 
       return paymentRef.id;

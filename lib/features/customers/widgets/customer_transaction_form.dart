@@ -147,6 +147,7 @@ Future<void> showAddDebtDialog(
       amountFils: result.amount,
       createdBy: createdBy,
       transactionId: transactionId,
+      note: result.note,
     );
 
     if (!context.mounted) return;
@@ -206,6 +207,7 @@ Future<void> showAddPaymentDialog(
       amountFils: result.amount,
       createdBy: createdBy,
       transactionId: transactionId,
+      note: result.note,
     );
 
     if (!context.mounted) return;

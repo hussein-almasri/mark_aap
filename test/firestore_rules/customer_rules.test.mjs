@@ -756,3 +756,188 @@ test('Rules deny overwriting an existing ACTIVE transaction', async () => {
   const doc = await getDoc(TXN(db, 'store-1', 'customer-1', 'op-x'));
   assert.equal(doc.data().amountFils, 5000, 'settled record must keep its original amount');
 });
+
+// ---------------------------------------------------------------------------
+// Phase 4L: final customer data integrity — balance arithmetic and note
+// preservation.
+//
+// Balance mirrors CustomerTransactionRepository.calculateBalanceAsync:
+// query status==ACTIVE, sum DEBT minus sum PAYMENT, ignore anything else.
+// Note mirrors the repository's _cleanNote (blank -> null).
+// ---------------------------------------------------------------------------
+
+// Mirror of the Dart-side balance computation.
+async function calculateBalance(db) {
+  const snap = await getDocs(query(
+    collection(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions'),
+    where('status', '==', 'ACTIVE'),
+  ));
+  let totalDebt = 0;
+  let totalPayment = 0;
+  for (const d of snap.docs) {
+    const data = d.data();
+    if (data.type === 'DEBT') totalDebt += data.amountFils;
+    else if (data.type === 'PAYMENT') totalPayment += data.amountFils;
+  }
+  return totalDebt - totalPayment;
+}
+
+// Mirror of CustomerTransactionRepository._cleanNote.
+const cleanNote = (note) => {
+  if (note == null) return null;
+  const trimmed = note.trim();
+  return trimmed === '' ? null : trimmed;
+};
+
+// Mirror of CustomerTransactionRepository.createDebt/createPayment for the
+// note-bearing write path: read-before-write, conditional set, note persisted.
+async function repoCreateTxn(db, txnId, { type, amountFils, createdBy, note }) {
+  const ref = TXN(db, 'store-1', 'customer-1', txnId);
+  return runTransaction(db, async (tx) => {
+    const existing = await tx.get(ref);
+    if (existing.exists()) {
+      const data = existing.data();
+      if (data.type === type &&
+          data.amountFils === amountFils &&
+          data.createdBy === createdBy) {
+        return txnId; // idempotent replay: no write
+      }
+      const err = new Error('CustomerTransactionAlreadyExists');
+      err.code = 'already-exists';
+      throw err;
+    }
+    const payload = type === 'DEBT'
+      ? debtPayload(createdBy, { amountFils, note: cleanNote(note) })
+      : paymentPayload(createdBy, { amountFils, note: cleanNote(note) });
+    tx.set(ref, payload);
+    return txnId;
+  });
+}
+
+// Mirror of the admin-only cancellation write (4 fields, nothing else).
+async function repoCancelTxn(db, txnId) {
+  await assertSucceeds(updateDoc(TXN(db, 'store-1', 'customer-1', txnId), {
+    status: 'CANCELLED',
+    cancelledBy: 'admin-1',
+    cancellationReason: 'Phase 4L balance test',
+    cancelledAt: serverTimestamp(),
+  }));
+}
+
+// 5.1 A single debt equals the balance.
+test('Balance of a single debt equals its amount', async () => {
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await createCustomerBaseline(db);
+  await assertSucceeds(repoCreateTxn(db, 'bal-1', {
+    type: 'DEBT', amountFils: 7500, createdBy: 'admin-1',
+  }));
+  assert.equal(await calculateBalance(db), 7500);
+});
+
+// 5.2 Several debts and payments: sum(debts) - sum(payments).
+test('Balance of mixed debts and payments sums active totals', async () => {
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await createCustomerBaseline(db);
+  await assertSucceeds(repoCreateTxn(db, 'bal-d1', {
+    type: 'DEBT', amountFils: 10000, createdBy: 'admin-1',
+  }));
+  await assertSucceeds(repoCreateTxn(db, 'bal-d2', {
+    type: 'DEBT', amountFils: 5000, createdBy: 'admin-1',
+  }));
+  await assertSucceeds(repoCreateTxn(db, 'bal-p1', {
+    type: 'PAYMENT', amountFils: 3000, createdBy: 'admin-1',
+  }));
+  // (10000 + 5000) - 3000 = 12000
+  assert.equal(await calculateBalance(db), 12000);
+});
+
+// 5.3 A cancelled transaction is excluded from the balance.
+test('Cancelled transaction is excluded from the balance', async () => {
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await createCustomerBaseline(db);
+  await assertSucceeds(repoCreateTxn(db, 'bal-keep', {
+    type: 'DEBT', amountFils: 8000, createdBy: 'admin-1',
+  }));
+  await assertSucceeds(repoCreateTxn(db, 'bal-cancel', {
+    type: 'DEBT', amountFils: 4000, createdBy: 'admin-1',
+  }));
+  assert.equal(await calculateBalance(db), 12000, 'both debts active before cancellation');
+
+  await repoCancelTxn(db, 'bal-cancel');
+
+  // 8000 - 0 = 8000: the cancelled 4000 must not count.
+  assert.equal(await calculateBalance(db), 8000);
+  const cancelled = await getDoc(TXN(db, 'store-1', 'customer-1', 'bal-cancel'));
+  assert.equal(cancelled.data().status, 'CANCELLED');
+});
+
+// 5.4 Debts fully settled by payments leave a zero balance.
+test('Balance reaches zero when payments settle all debts', async () => {
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await createCustomerBaseline(db);
+  await assertSucceeds(repoCreateTxn(db, 'bal-z-d', {
+    type: 'DEBT', amountFils: 9000, createdBy: 'admin-1',
+  }));
+  await assertSucceeds(repoCreateTxn(db, 'bal-z-d2', {
+    type: 'DEBT', amountFils: 3000, createdBy: 'admin-1',
+  }));
+  await assertSucceeds(repoCreateTxn(db, 'bal-z-p', {
+    type: 'PAYMENT', amountFils: 12000, createdBy: 'admin-1',
+  }));
+  assert.equal(await calculateBalance(db), 0, 'debts fully settled must leave zero');
+});
+
+// 6.1 A note supplied for a debt is stored and read back.
+test('Debt note is persisted and returned', async () => {
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await createCustomerBaseline(db);
+  await assertSucceeds(repoCreateTxn(db, 'note-d', {
+    type: 'DEBT', amountFils: 5000, createdBy: 'admin-1', note: 'سلفة رمضان',
+  }));
+  const doc = await getDoc(TXN(db, 'store-1', 'customer-1', 'note-d'));
+  assert.equal(doc.data().note, 'سلفة رمضان', 'debt note must survive the write');
+});
+
+// 6.2 A note supplied for a payment is stored and read back.
+test('Payment note is persisted and returned', async () => {
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await createCustomerBaseline(db);
+  await assertSucceeds(repoCreateTxn(db, 'note-p', {
+    type: 'PAYMENT', amountFils: 2000, createdBy: 'admin-1', note: 'دفعة نقدية',
+  }));
+  const doc = await getDoc(TXN(db, 'store-1', 'customer-1', 'note-p'));
+  assert.equal(doc.data().note, 'دفعة نقدية', 'payment note must survive the write');
+});
+
+// 6.3 Omitting the note (or passing blank) stores null, never an empty string.
+test('Omitted or blank note is stored as null', async () => {
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await createCustomerBaseline(db);
+  await assertSucceeds(repoCreateTxn(db, 'note-none', {
+    type: 'DEBT', amountFils: 1000, createdBy: 'admin-1',
+  }));
+  await assertSucceeds(repoCreateTxn(db, 'note-blank', {
+    type: 'DEBT', amountFils: 1000, createdBy: 'admin-1', note: '   ',
+  }));
+  const none = await getDoc(TXN(db, 'store-1', 'customer-1', 'note-none'));
+  const blank = await getDoc(TXN(db, 'store-1', 'customer-1', 'note-blank'));
+  assert.equal(none.data().note, null);
+  assert.equal(blank.data().note, null, 'whitespace-only note must normalise to null');
+});
+
+// 6.4 An idempotent replay must not alter the originally stored note.
+test('Idempotent replay preserves the original note', async () => {
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await createCustomerBaseline(db);
+  await assertSucceeds(repoCreateTxn(db, 'note-replay', {
+    type: 'DEBT', amountFils: 5000, createdBy: 'admin-1', note: 'الأصلية',
+  }));
+  // Retry of the same logical operation, but the caller forgot the note.
+  const replayed = await repoCreateTxn(db, 'note-replay', {
+    type: 'DEBT', amountFils: 5000, createdBy: 'admin-1',
+  });
+  assert.equal(replayed, 'note-replay');
+  const doc = await getDoc(TXN(db, 'store-1', 'customer-1', 'note-replay'));
+  assert.equal(doc.data().note, 'الأصلية', 'replay must not overwrite the stored note');
+  assert.equal(await countDebts(db), 1, 'replay must not post a second debt');
+});
