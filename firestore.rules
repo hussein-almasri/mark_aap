@@ -1853,26 +1853,42 @@ service cloud.firestore {
     }
 
     match /customers/{customerId}/transactions/{transactionId} {
-      allow get, list: if isFinancialStoreMember(storeId)
+      // Single-document reads may evaluate the stored document directly.
+      allow get: if isFinancialStoreMember(storeId)
         && (isAdmin(storeId)
-          || (resource.data.type in ['DEBT', 'PAYMENT', 'CREATE_CUSTOMER_DEBT', 'CREATE_CUSTOMER_PAYMENT', 'CANCEL_CUSTOMER_TRANSACTION', 'ADMIN_CANCEL_CUSTOMER_TRANSACTION']
+          || (resource.data.type in ['DEBT', 'PAYMENT']
             && get(/databases/$(database)/documents/stores/$(storeId)/customers/$(customerId)).data.isActive == true));
+      // Collection reads cannot evaluate resource.data, so the employee branch
+      // is proven by constraining the query to an active customer of the same
+      // store. Only DEBT/PAYMENT documents are creatable (see create below),
+      // so no other transaction type can be exposed this way.
+      allow list: if isAdmin(storeId)
+        || (isFinancialStoreMember(storeId)
+          && get(/databases/$(database)/documents/stores/$(storeId)/customers/$(customerId)).data.isActive == true);
+      // Admin may record any transaction type. A financial member may record a
+      // DEBT only when the customer has debt enabled, and may always record a
+      // PAYMENT (matching the customer details screen).
       allow create: if isFinancialStoreMember(storeId)
         && (isAdmin(storeId)
-          || (isEmployeeManagementAdmin(storeId)
-            && get(/databases/$(database)/documents/stores/$(storeId)/customers/$(customerId)).data.debtEnabled == true
-            && resource.data.type == 'DEBT'))
-        && request.resource.data.type in ['DEBT', 'PAYMENT', 'CREATE_CUSTOMER_DEBT', 'CREATE_CUSTOMER_PAYMENT', 'CANCEL_CUSTOMER_TRANSACTION', 'ADMIN_CANCEL_CUSTOMER_TRANSACTION']
+          || (request.resource.data.type == 'DEBT'
+            && get(/databases/$(database)/documents/stores/$(storeId)/customers/$(customerId)).data.debtEnabled == true)
+          || request.resource.data.type == 'PAYMENT')
+        && request.resource.data.type in ['DEBT', 'PAYMENT']
         && request.resource.data.amountFils is int
         && request.resource.data.amountFils > 0
         && request.resource.data.createdAt == request.time
         && request.resource.data.createdBy == request.auth.uid;
+      // Cancellation is admin only, and may only touch the cancellation
+      // fields. Immutable fields (id/type/amountFils/createdAt/createdBy/
+      // note) must survive a cancellation unchanged.
       allow update: if isAdmin(storeId)
         && request.resource.data.status == 'CANCELLED'
         && request.resource.data.cancelledAt is timestamp
         && request.resource.data.cancelledBy == request.auth.uid
         && request.resource.data.cancellationReason is string
-        && request.resource.data.cancellationReason != '';
+        && request.resource.data.cancellationReason != ''
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['status', 'cancelledAt', 'cancelledBy', 'cancellationReason']);
       allow delete: if false;
     }
 

@@ -33,9 +33,6 @@ class CustomerTransactionRepository {
   CollectionReference<Map<String, dynamic>> _customers(String storeId) =>
       _firestore.collection('stores').doc(storeId).collection('customers');
 
-  CollectionReference<Map<String, dynamic>> _operations(String storeId) =>
-      _firestore.collection('stores').doc(storeId).collection('operations');
-
   Stream<List<CustomerTransactionModel>> watchTransactions(
       String storeId, String customerId) {
     return _transactions(storeId, customerId)
@@ -58,31 +55,27 @@ class CustomerTransactionRepository {
     if (!customerDoc.exists) {
       throw CustomerTransactionNotFoundException();
     }
-final _customer =
-    CustomerModel.fromDocument(customerDoc);
+    final customer =
+        CustomerModel.fromDocument(customerDoc);
 
-  final timestamp = FieldValue.serverTimestamp();
-  final operationId = 'debt_$customerId';
+    final timestamp = FieldValue.serverTimestamp();
 
-  return _firestore.runTransaction((transaction) async {
-    // Idempotency: check if operation already exists
-    final operationDoc = await transaction.get(_operations(storeId).doc(operationId));
-    if (operationDoc.exists) {
-      throw CustomerTransactionAlreadyExistsException();
+    // The customer transaction document itself is the durable operation
+    // record. No separate stores/{storeId}/operations document is written:
+    // that collection is reserved for multi-document invoice/payment
+    // coordination and does not accept customer operation types.
+    if (!customer.debtEnabled) {
+      throw StateError(
+          'Customer debt is disabled. Admin may enable debt or override rules.');
     }
 
-    // Check debtEnabled: customer must have debt enabled
-    if (!_customer.debtEnabled) {
-        throw StateError(
-            'Customer debt is disabled. Admin may enable debt or override rules.');
-      }
+    if (amountFils <= 0) {
+      throw ArgumentError.value(amountFils, 'amountFils', 'Must be > 0.');
+    }
 
-      if (amountFils <= 0) {
-        throw ArgumentError.value(amountFils, 'amountFils', 'Must be > 0.');
-      }
+    final debtRef = _transactions(storeId, customerId).doc();
 
-      final debtRef =
-          _transactions(storeId, customerId).doc();
+    return _firestore.runTransaction((transaction) async {
       transaction.set(debtRef, {
         'type': 'DEBT',
         'amountFils': amountFils,
@@ -93,15 +86,6 @@ final _customer =
         'cancelledBy': FieldValue.delete(),
         'cancellationReason': FieldValue.delete(),
         'note': null,
-      });
-
-      transaction.set(_operations(storeId).doc(operationId), {
-        'operationId': operationId,
-        'type': 'CREATE_CUSTOMER_DEBT',
-        'createdBy': createdBy,
-        'createdAt': timestamp,
-        'status': 'COMPLETED',
-        'retryCount': 0,
       });
 
       return debtRef.id;
@@ -119,28 +103,18 @@ final _customer =
     if (!customerDoc.exists) {
       throw CustomerTransactionNotFoundException();
     }
-    final _customer =
-        CustomerModel.fromDocument(customerDoc);
 
     final timestamp = FieldValue.serverTimestamp();
-    final operationId = 'payment_$customerId';
+
+    if (amountFils <= 0) {
+      throw ArgumentError.value(amountFils, 'amountFils', 'Must be > 0.');
+    }
+
+    // Payment is allowed even when debtEnabled == false.
+    // Balance validation is enforced by Firestore Rules.
+    final paymentRef = _transactions(storeId, customerId).doc();
 
     return _firestore.runTransaction((transaction) async {
-      // Idempotency: check if operation already exists
-      final operationDoc = await transaction.get(_operations(storeId).doc(operationId));
-      if (operationDoc.exists) {
-        throw CustomerTransactionAlreadyExistsException();
-      }
-
-      if (amountFils <= 0) {
-        throw ArgumentError.value(amountFils, 'amountFils', 'Must be > 0.');
-      }
-
-      // Payment is allowed even when debtEnabled == false
-      // Balance validation is enforced by Firestore Rules
-
-      final paymentRef =
-          _transactions(storeId, customerId).doc();
       transaction.set(paymentRef, {
         'type': 'PAYMENT',
         'amountFils': amountFils,
@@ -151,15 +125,6 @@ final _customer =
         'cancelledBy': FieldValue.delete(),
         'cancellationReason': FieldValue.delete(),
         'note': null,
-      });
-
-      transaction.set(_operations(storeId).doc(operationId), {
-        'operationId': operationId,
-        'type': 'CREATE_CUSTOMER_PAYMENT',
-        'createdBy': createdBy,
-        'createdAt': timestamp,
-        'status': 'COMPLETED',
-        'retryCount': 0,
       });
 
       return paymentRef.id;
@@ -267,18 +232,12 @@ final _customer =
         'cancellationReason': cancellationReason,
       });
 
-      // Preserve the transaction in history; only update status/metadata
-      // Cancelled DEBT increases available balance (payment capacity restored)
-      // Cancelled PAYMENT decreases available balance accordingly
-
-      transaction.update(_operations(storeId).doc('_cancel_$transactionId'), {
-        'operationId': '_cancel_$transactionId',
-        'type': 'CANCEL_CUSTOMER_TRANSACTION',
-        'cancelledBy': cancelledBy,
-        'cancellationReason': cancellationReason,
-        'status': 'COMPLETED',
-        'retryCount': 0,
-      });
+      // Preserve the transaction in history; only update status/metadata.
+      // Cancelled DEBT increases available balance (payment capacity restored).
+      // Cancelled PAYMENT decreases available balance accordingly.
+      // The cancellation metadata written above is the durable operation
+      // record; no separate stores/{storeId}/operations document is touched
+      // because that collection does not accept customer operation types.
     });
   }
 
@@ -316,15 +275,6 @@ final _customer =
         'cancelledAt': FieldValue.serverTimestamp(),
         'cancelledBy': cancelledBy,
         'cancellationReason': cancellationReason,
-      });
-
-      transaction.update(_operations(storeId).doc('_admin_cancel_$transactionId'), {
-        'operationId': '_admin_cancel_$transactionId',
-        'type': 'ADMIN_CANCEL_CUSTOMER_TRANSACTION',
-        'cancelledBy': cancelledBy,
-        'cancellationReason': cancellationReason,
-        'status': 'COMPLETED',
-        'retryCount': 0,
       });
     });
   }

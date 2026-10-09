@@ -2099,7 +2099,8 @@ test('Cross-store customer access is denied', async () => {
   await assertFails(setDoc(doc(adminDb, 'stores', 'store-2', 'customers', 'customer-store2'), {
     name: 'Modified',
     updatedAt: serverTimestamp(),
-  }));\r\n});
+  }));
+});
 
 test('Admin can read customer transaction history', async () => {
   await seedCustomer({ customerId: 'customer-1', isActive: true });

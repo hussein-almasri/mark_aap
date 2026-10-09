@@ -524,7 +524,13 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
         if (!isAdmin && widget.user.isEmployee) ...[
           const SizedBox(width: 8),
           FilledButton.icon(
-            onPressed: canAddDebt ? () => _showTransactionForm('payment') : null,
+            onPressed: canAddDebt ? () => _showTransactionForm('debt') : null,
+            icon: const Icon(Icons.add_chart),
+            label: const Text('دين'),
+          ),
+          const SizedBox(width: 8),
+          FilledButton.icon(
+            onPressed: () => _showTransactionForm('payment'),
             icon: const Icon(Icons.payment),
             label: const Text('مدفوعة'),
           ),
