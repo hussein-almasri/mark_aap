@@ -73,6 +73,7 @@ class CustomerTransactionRepository {
     required int amountFils,
     required String createdBy,
     String? transactionId,
+    String? note,
   }) async {
     final customerDoc =
         await _customers(storeId).doc(customerId).get();
@@ -129,7 +130,7 @@ class CustomerTransactionRepository {
         'cancelledAt': FieldValue.delete(),
         'cancelledBy': FieldValue.delete(),
         'cancellationReason': FieldValue.delete(),
-        'note': null,
+        'note': _cleanNote(note),
       });
 
       return debtRef.id;
