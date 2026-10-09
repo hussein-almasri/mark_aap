@@ -143,6 +143,7 @@ class CustomerTransactionRepository {
     required int amountFils,
     required String createdBy,
     String? transactionId,
+    String? note,
   }) async {
     final customerDoc =
         await _customers(storeId).doc(customerId).get();
