@@ -90,12 +90,12 @@ service cloud.firestore {
     }
 
     function normalizedCustomerName(name) {
-      return name.trim().toLowerCase();
+      return name.trim().lower();
     }
 
     function customerNameKey(name) {
       return 'c_' + normalizedCustomerName(name).toUtf8().toBase64()
-        .replace('/', '_').replace('[+]', '-').replace('=');
+        .replace('/', '_').replace('[+]', '-').replace('=', '');
     }
 
     function customerNameKeyPath(storeId, name) {
@@ -1630,8 +1630,7 @@ service cloud.firestore {
         allow delete: if false;
 
         match /photos/{photoId} {
-allow get, list: if isAdmin(storeId)
-        || (isFinancialStoreMember(storeId) && get(/databases/$(database)/documents/stores/$(storeId)/customers/{customerId}).data.isActive == true);
+          allow get, list: if isFinancialStoreMember(storeId);
           allow create: if validInvoicePhotoMetadataCreate(
             storeId, invoiceId, photoId
           );
@@ -1823,7 +1822,7 @@ allow get, list: if isAdmin(storeId)
     match /customers/{customerId} {
       allow get, list: if isAdmin(storeId)
         || (isFinancialStoreMember(storeId)
-          && get(resource.path).data.isActive == true);
+          && resource.data.isActive == true);
       allow create: if isAdmin(storeId)
         && request.resource.data.keys().hasAll(['name', 'phone', 'debtEnabled', 'isActive', 'createdAt', 'updatedAt', 'createdBy', 'updatedBy'])
         && request.resource.data.keys().hasOnly(['name', 'phone', 'debtEnabled', 'isActive', 'createdAt', 'updatedAt', 'createdBy', 'updatedBy'])
@@ -1832,22 +1831,22 @@ allow get, list: if isAdmin(storeId)
         && request.resource.data.name.matches('.*\\S.*')
         && request.resource.data.name.size() <= 120
         && (request.resource.data.phone is string || request.resource.data.phone == null)
-        && request.resource.data.debtEnabled is boolean
-        && request.resource.data.isActive is boolean
+        && request.resource.data.debtEnabled is bool
+        && request.resource.data.isActive is bool
         && request.resource.data.createdAt == request.time
         && request.resource.data.updatedAt == request.time
         && request.resource.data.createdBy == request.auth.uid
         && request.resource.data.updatedBy == request.auth.uid;
       allow update: if isAdmin(storeId)
-        && request.resource.data.keys().hasAll(['name', 'phone', 'debtEnabled', 'isActive', 'updatedAt', 'updatedBy'])
-        && request.resource.data.keys().hasOnly(['name', 'phone', 'debtEnabled', 'isActive', 'updatedAt', 'updatedBy'])
+        && request.resource.data.keys().hasAll(['name', 'debtEnabled', 'isActive', 'updatedAt', 'updatedBy'])
+        && request.resource.data.keys().hasOnly(['name', 'phone', 'debtEnabled', 'isActive', 'createdAt', 'updatedAt', 'createdBy', 'updatedBy'])
         && request.resource.data.name is string
         && request.resource.data.name == request.resource.data.name.trim()
         && request.resource.data.name.size() <= 120
-        && (request.resource.data.phone is string || request.resource.data.phone == null)
-        && request.resource.data.debtEnabled is boolean
-        && request.resource.data.isActive is boolean
-        && 'deleted' not in request.resource.data
+        && (request.resource.data.get('phone', null) is string || request.resource.data.get('phone', null) == null)
+        && request.resource.data.debtEnabled is bool
+        && request.resource.data.isActive is bool
+        && !('deleted' in request.resource.data)
         && request.resource.data.updatedAt == request.time
         && request.resource.data.updatedBy == request.auth.uid;
       allow delete: if false;
@@ -1857,7 +1856,7 @@ allow get, list: if isAdmin(storeId)
       allow get, list: if isFinancialStoreMember(storeId)
         && (isAdmin(storeId)
           || (resource.data.type in ['DEBT', 'PAYMENT', 'CREATE_CUSTOMER_DEBT', 'CREATE_CUSTOMER_PAYMENT', 'CANCEL_CUSTOMER_TRANSACTION', 'ADMIN_CANCEL_CUSTOMER_TRANSACTION']
-            && get(/databases/$(database)/documents/stores/$(storeId)/customers/{customerId}).data.isActive == true)));
+            && get(/databases/$(database)/documents/stores/$(storeId)/customers/$(customerId)).data.isActive == true));
       allow create: if isFinancialStoreMember(storeId)
         && (isAdmin(storeId)
           || (isEmployeeManagementAdmin(storeId)
@@ -1886,7 +1885,7 @@ allow get, list: if isAdmin(storeId)
         && request.resource.data.normalizedName is string
         && request.resource.data.normalizedName == normalizedCustomerName(request.resource.data.normalizedName)
         && normalizedNameKey == customerNameKey(request.resource.data.normalizedName)
-        && !exists(resource.path);
+        && !exists(/databases/$(database)/documents/stores/$(storeId)/customerNameKeys/$(normalizedNameKey));
       allow delete: if isAdmin(storeId)
         && exists(resource.path)
         && get(resource.path).data.customerId != null
@@ -1894,7 +1893,6 @@ allow get, list: if isAdmin(storeId)
     }
 
     // ---------- End Customer ----------
-PYEOF
 
       match /{document=**} {
         allow read, write: if false;

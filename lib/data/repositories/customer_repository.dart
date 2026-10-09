@@ -55,7 +55,6 @@ class CustomerRepository {
   Future<List<CustomerModel>> listActiveCustomers(String storeId) async {
     final snapshot = await _customers(storeId)
         .where('isActive', isEqualTo: true)
-        .orderBy('name')
         .get();
     return snapshot.docs.map((doc) => CustomerModel.fromDocument(doc)).toList();
   }

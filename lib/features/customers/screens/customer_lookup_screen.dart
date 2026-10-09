@@ -52,12 +52,14 @@ class _CustomerLookupScreenState extends State<CustomerLookupScreen> {
   List<CustomerModel> _getFilteredCustomers() {
     final customers = _customers ?? [];
     final query = _searchQuery.trim().toLowerCase();
-    if (query.isEmpty) return customers;
-    return customers.where((c) {
-      final nameMatch = c.name.toLowerCase().contains(query);
-      final phoneMatch = c.phone?.toLowerCase().contains(query) == true;
-      return nameMatch || phoneMatch;
-    }).toList();
+    final filtered = query.isEmpty
+        ? customers
+        : customers.where((c) {
+            final nameMatch = c.name.toLowerCase().contains(query);
+            final phoneMatch = c.phone?.toLowerCase().contains(query) == true;
+            return nameMatch || phoneMatch;
+          }).toList();
+    return filtered..sort((a, b) => a.name.compareTo(b.name));
   }
 
   void _openCustomer(CustomerModel customer) {
