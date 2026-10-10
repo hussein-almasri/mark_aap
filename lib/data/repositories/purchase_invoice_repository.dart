@@ -27,6 +27,13 @@ class PurchaseInvoiceRepository {
   CollectionReference<Map<String, dynamic>> operations(String storeId) =>
       _firestore.collection('stores').doc(storeId).collection('operations');
 
+  /// Mints a fresh operation id locally (no network round-trip).
+  ///
+  /// Callers mint one id per *logical* create so retrying the same submission
+  /// reuses the same id (idempotent) while a new submission gets a new id.
+  /// Mirrors `CustomerTransactionRepository.newTransactionId`.
+  String newOperationId(String storeId) => operations(storeId).doc().id;
+
   Future<PurchaseInvoiceModel> getInvoice(String storeId, String invoiceId) async {
     final snapshot = await purchaseInvoices(storeId).doc(invoiceId).get();
     return PurchaseInvoiceModel.fromDocument(snapshot);
