@@ -166,6 +166,11 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
       _showMessage(type == 'debt' ? 'تم إضافة الدين' : 'تم تسجيل المدفوعة');
       await _loadTransactions();
     } catch (e) {
+      // TEMP DIAGNOSTIC (safe): log only the technical error shape so a
+      // persistent failure can be diagnosed from the device logs. Deliberately
+      // excludes the customer, the amount, and the note.
+      final code = e is FirebaseException ? e.code : '-';
+      debugPrint('[txn-save] type=${e.runtimeType} code=$code');
       String message;
       if (e.toString().contains('Must be > 0')) {
         message = 'المبلغ يجب أن يكون أكبر من صفر';

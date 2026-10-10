@@ -1064,3 +1064,74 @@ test('Employee debt and payment with stable ids produce the right balance', asyn
   }));
   assert.equal(await calculateBalance(db), 6500);
 });
+
+// ---------------------------------------------------------------------------
+// Phase 4P — regression for the ACTUAL save failure.
+//
+// Root cause of "تعذر العملية" on every debt/payment save: the create payload
+// used to include cancelledAt/cancelledBy/cancellationReason as
+// FieldValue.delete(). Firestore SDKs reject FieldValue.delete() inside
+// Transaction.set() unless merge:true, throwing a CLIENT-SIDE
+// `invalid-argument` error before any write — for BOTH admin and employee,
+// BOTH debt and payment. This was not a rules denial, which is why the earlier
+// rules-only tests passed while the real app failed.
+//
+// These tests pin the corrected payload: a fresh transaction carries NO
+// cancellation fields (they are added later only via adminCancelTransaction's
+// update). Deleting markers on create is both unnecessary and invalid.
+// ---------------------------------------------------------------------------
+
+async function createAndReadRaw(db, txnId, createdBy, type) {
+  await assertSucceeds(repoCreateTxn(db, txnId, {
+    type, amountFils: 3000, createdBy, note: 'تجربة',
+  }));
+  return getDoc(TXN(db, 'store-1', 'customer-1', txnId));
+}
+
+// 8.1 Admin create leaves NO cancellation fields on the document.
+test('Admin debt/payment create stores no cancellation fields', async () => {
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await createCustomerBaseline(db, { debtEnabled: true });
+  const debt = await createAndReadRaw(db, 'shape-ad', 'admin-1', 'DEBT');
+  const pay = await createAndReadRaw(db, 'shape-ap', 'admin-1', 'PAYMENT');
+  for (const [label, snap] of [['debt', debt], ['payment', pay]]) {
+    const d = snap.data();
+    assert.equal(snap.exists(), true);
+    assert.equal('cancelledAt' in d, false, `${label}: cancelledAt must be absent on create`);
+    assert.equal('cancelledBy' in d, false, `${label}: cancelledBy must be absent on create`);
+    assert.equal('cancellationReason' in d, false, `${label}: cancellationReason must be absent on create`);
+    assert.equal(d.status, 'ACTIVE');
+    assert.equal(d.note, 'تجربة');
+  }
+});
+
+// 8.2 Employee create leaves NO cancellation fields on the document, and the
+// corrected payload is accepted by the rules for the role that was reported
+// failing.
+test('Employee debt/payment create stores no cancellation fields', async () => {
+  const adminDb = testEnv.authenticatedContext('admin-1').firestore();
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await createCustomerBaseline(adminDb, { debtEnabled: true });
+  const debt = await createAndReadRaw(db, 'shape-ed', 'employee-1', 'DEBT');
+  const pay = await createAndReadRaw(db, 'shape-ep', 'employee-1', 'PAYMENT');
+  for (const [label, snap] of [['debt', debt], ['payment', pay]]) {
+    const d = snap.data();
+    assert.equal(snap.exists(), true);
+    assert.equal('cancelledAt' in d, false, `${label}: cancelledAt must be absent on create`);
+    assert.equal('cancelledBy' in d, false, `${label}: cancelledBy must be absent on create`);
+    assert.equal('cancellationReason' in d, false, `${label}: cancellationReason must be absent on create`);
+    assert.equal(d.createdBy, 'employee-1');
+  }
+});
+
+// 8.3 After a corrected create, admin cancellation still works end to end
+// (the metadata is added by update, not by the create payload).
+test('Admin can cancel a transaction created without cancellation fields', async () => {
+  const adminDb = testEnv.authenticatedContext('admin-1').firestore();
+  await createCustomerBaseline(adminDb, { debtEnabled: true });
+  await createAndReadRaw(adminDb, 'shape-cancel', 'admin-1', 'DEBT');
+  await repoCancelTxn(adminDb, 'shape-cancel');
+  const snap = await getDoc(TXN(adminDb, 'store-1', 'customer-1', 'shape-cancel'));
+  assert.equal(snap.data().status, 'CANCELLED');
+  assert.equal(snap.data().cancellationReason, 'Phase 4L balance test');
+});

@@ -156,15 +156,18 @@ class CustomerTransactionRepository {
     }
 
     return _firestore.runTransaction((transaction) async {
+      // NOTE: the cancellation fields (cancelledAt/cancelledBy/
+      // cancellationReason) are intentionally ABSENT here. A brand-new
+      // transaction has no cancellation metadata, and FieldValue.delete() is
+      // not allowed in Transaction.set() without merge:true — it throws
+      // invalid-argument and broke every save. Cancellation metadata is added
+      // later, only via adminCancelTransaction's update().
       transaction.set(debtRef, {
         'type': 'DEBT',
         'amountFils': amountFils,
         'createdAt': timestamp,
         'createdBy': createdBy,
         'status': 'ACTIVE',
-        'cancelledAt': FieldValue.delete(),
-        'cancelledBy': FieldValue.delete(),
-        'cancellationReason': FieldValue.delete(),
         'note': _cleanNote(note),
       });
 
@@ -217,15 +220,14 @@ class CustomerTransactionRepository {
     }
 
     return _firestore.runTransaction((transaction) async {
+      // Same as createDebt: cancellation fields are intentionally absent;
+      // FieldValue.delete() is invalid in Transaction.set() without merge.
       transaction.set(paymentRef, {
         'type': 'PAYMENT',
         'amountFils': amountFils,
         'createdAt': timestamp,
         'createdBy': createdBy,
         'status': 'ACTIVE',
-        'cancelledAt': FieldValue.delete(),
-        'cancelledBy': FieldValue.delete(),
-        'cancellationReason': FieldValue.delete(),
         'note': _cleanNote(note),
       });
 
