@@ -142,7 +142,14 @@ class CashWithdrawalModel {
         withdrawalId: withdrawalId,
         amountFils: _requiredInt(data, 'amountFils'),
         type: CashWithdrawalType.fromValue(_requiredString(data, 'type')),
-        source: SupplierPaymentSource.fromValue(_requiredString(data, 'source')),
+        // Automatic (PURCHASE_INVOICE) withdrawal documents are written by the
+        // Firestore rules with an EXACT key set that forbids a `source` field
+        // (see validInvoiceWithdrawalCreate / validSupplierPaymentWithdrawalCreate).
+        // Fall back to the shop-cash default when the key is absent so those
+        // documents can still be read back. Manual withdrawals always store it.
+        source: data['source'] is String
+            ? SupplierPaymentSource.fromValue(data['source'] as String)
+            : SupplierPaymentSource.shopCash,
         invoiceId: _optionalString(data, 'invoiceId'),
         supplierPaymentId: _optionalString(data, 'supplierPaymentId'),
         note: _optionalString(data, 'note'),

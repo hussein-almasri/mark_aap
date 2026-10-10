@@ -37,9 +37,27 @@ class PurchaseInvoiceRepository {
     return snapshot.docs.map(PurchaseInvoiceModel.fromDocument).toList();
   }
 
-  /// Creates a purchase invoice atomically within a Firestore transaction.
-  /// Coordinates: invoice + supplier debt + automatic cash withdrawal (if shopCash > 0) + financial operation record.
-  /// Idempotency: if operationId already exists, throws InvoiceAlreadyExistsException (no re-execution).
+  /// Creates a purchase invoice using the two-phase pattern the Firestore rules
+  /// require:
+  ///
+  ///  1. Write the [operations] record with status `PROCESSING`
+  ///     (`validOperationCreate` demands PROCESSING on create).
+  ///  2. In one atomic transaction, write the invoice + optional supplier debt
+  ///     + optional automatic cash withdrawal and flip the operation to
+  ///     `COMPLETED` (`validOperationCompletion` only allows PROCESSING→COMPLETED
+  ///     and cross-checks the invoice via `getAfter`).
+  ///
+  /// A single `runTransaction` that created the operation as COMPLETED directly
+  /// is rejected by the rules, hence the split.
+  ///
+  /// Idempotency / retry safety: every document ID is derived from [operationId]
+  /// (invoice = operationId, debt = operationId, withdrawal = `invoice_` +
+  /// operationId, operation = operationId). Re-running with the same
+  /// [operationId] therefore overwrites the same documents instead of creating
+  /// duplicates. If the operation is already `COMPLETED` we throw
+  /// [InvoiceAlreadyExistsException] (no re-execution); if it is still
+  /// `PROCESSING` (a previous attempt died between phase 1 and phase 2) we
+  /// resume phase 2 only.
   Future<String> createInvoice({
     required String storeId,
     required String companyId,
@@ -57,25 +75,54 @@ class PurchaseInvoiceRepository {
     // Validate component sum matches total at model level
     if (shopCashAmountFils + outsideCashAmountFils + supplierDebtAmountFils !=
         totalAmountFils) {
-      throw ArgumentError(
-          'Invoice payment components must equal its total.');
+      throw ArgumentError('Invoice payment components must equal its total.');
     }
     if (totalAmountFils <= 0) {
       throw ArgumentError('Total invoice amount must be greater than zero.');
     }
 
-    return await _firestore.runTransaction((Transaction transaction) async {
-      // 1. Idempotency check: verify operationId does not already exist
-      final operationRef = operations(storeId).doc(operationId);
-      final existingOperation = await transaction.get(operationRef);
+    final operationRef = operations(storeId).doc(operationId);
+    final invoiceRef = purchaseInvoices(storeId).doc(operationId);
 
-      if (existingOperation.exists) {
-        // Idempotent: operation already exists - do NOT re-execute financial workflow
-        throw InvoiceAlreadyExistsException();
+    // ----- Idempotency gate (outside any transaction) -----
+    final existingOperation = await operationRef.get();
+    if (existingOperation.exists) {
+      final status = existingOperation.data()?['status'];
+      if (status == 'COMPLETED') {
+        // Fully created already - do NOT re-execute the financial workflow.
+        throw const InvoiceAlreadyExistsException();
+      }
+      // status == 'PROCESSING' (or a prior FAILED): a previous attempt did not
+      // finish phase 2. Resume by running phase 2 below - it is deterministic
+      // for this operationId so it cannot create duplicates.
+    } else {
+      // ----- Phase 1: create the operation record as PROCESSING -----
+      await operationRef.set({
+        'operationId': operationId,
+        'type': 'CREATE_PURCHASE_INVOICE',
+        'createdBy': createdBy,
+        'createdAt': FieldValue.serverTimestamp(),
+        'status': 'PROCESSING',
+        'retryCount': 0,
+        'invoiceId': operationId,
+        if (photoIds.isNotEmpty) 'photoIds': photoIds,
+      });
+    }
+
+    // ----- Phase 2: atomic invoice + debt? + withdrawal? + operation→COMPLETED -----
+    await _firestore.runTransaction((Transaction transaction) async {
+      // Guard against a concurrent completion racing this retry.
+      final opSnapshot = await transaction.get(operationRef);
+      if (!opSnapshot.exists) {
+        // Phase 1 write not observed - treat as already handled upstream.
+        throw const InvoiceAlreadyExistsException();
+      }
+      final opStatus = opSnapshot.data()?['status'];
+      if (opStatus == 'COMPLETED') {
+        throw const InvoiceAlreadyExistsException();
       }
 
-      // 2. Write purchase invoice document
-      final invoiceRef = purchaseInvoices(storeId).doc(operationId);
+      // 1. Purchase invoice document
       transaction.set(invoiceRef, {
         'companyId': companyId,
         'companyName': companyName,
@@ -85,7 +132,8 @@ class PurchaseInvoiceRepository {
         'shopCashAmountFils': shopCashAmountFils,
         'outsideCashAmountFils': outsideCashAmountFils,
         'supplierDebtAmountFils': supplierDebtAmountFils,
-        'notes': notes,
+        // Only write notes when present: the rules reject a null `notes` key.
+        if (notes != null) 'notes': notes,
         'status': 'ACTIVE',
         'createdAt': FieldValue.serverTimestamp(),
         'createdBy': createdBy,
@@ -93,24 +141,28 @@ class PurchaseInvoiceRepository {
         'photoIds': photoIds,
       });
 
-      // 3. Write supplier debt document (debtId = invoiceId = operationId)
-      final originalAmountFils = supplierDebtAmountFils;
-      final remainingAmountFils = originalAmountFils;
-      final debtRef = supplierDebts(storeId).doc(operationId);
-      transaction.set(debtRef, {
-        'invoiceId': operationId,
-        'companyId': companyId,
-        'companyName': companyName,
-        'originalAmountFils': originalAmountFils,
-        'remainingAmountFils': remainingAmountFils,
-        'status': 'OPEN',
-        'createdAt': FieldValue.serverTimestamp(),
-        'createdBy': createdBy,
-        'operationId': operationId,
-        'lastOperationId': operationId,
-      });
+      // 2. Supplier debt document - ONLY when a debt exists. The rules require
+      //    !existsAfter(debtRef) when supplierDebtAmountFils == 0, so we must
+      //    not write a zero-amount debt.
+      if (supplierDebtAmountFils > 0) {
+        final debtRef = supplierDebts(storeId).doc(operationId);
+        transaction.set(debtRef, {
+          'invoiceId': operationId,
+          'companyId': companyId,
+          'companyName': companyName,
+          'originalAmountFils': supplierDebtAmountFils,
+          'remainingAmountFils': supplierDebtAmountFils,
+          'status': 'OPEN',
+          'createdAt': FieldValue.serverTimestamp(),
+          'createdBy': createdBy,
+          'operationId': operationId,
+          'lastOperationId': operationId,
+        });
+      }
 
-      // 4. Automatic cash withdrawal when shopCash > 0
+      // 3. Automatic cash withdrawal - ONLY when shopCash > 0. Keys must be
+      //    EXACTLY [amountFils, type, invoiceId, createdAt, createdBy, status]
+      //    per validInvoiceWithdrawalCreate. Deliberately no `source` field.
       if (shopCashAmountFils > 0) {
         final withdrawalRef = cashWithdrawals(storeId).doc('invoice_$operationId');
         transaction.set(withdrawalRef, {
@@ -123,116 +175,12 @@ class PurchaseInvoiceRepository {
         });
       }
 
-      // 5. Financial operation/idempotency record (finalized COMPLETED in same tx)
-      // In V1: operation record is finalized within the same atomic workflow, no separate completion transaction.
-      final opRef = operations(storeId).doc(operationId);
-      transaction.set(opRef, {
-        'operationId': operationId,
-        'type': 'CREATE_PURCHASE_INVOICE',
-        'createdBy': createdBy,
-        'createdAt': FieldValue.serverTimestamp(),
-        'status': 'COMPLETED',
-        'retryCount': 0,
-      });
-
-      // 6. Return the invoice ID
-      return operationId;
+      // 4. Flip the operation to COMPLETED. Rules only allow the `status` field
+      //    to change, and only from PROCESSING.
+      transaction.update(operationRef, {'status': 'COMPLETED'});
     });
-  }
 
-  // ---------- Internal transaction helpers ----------
-
-  /// Writes a purchase invoice document within a parent transaction.
-  /// The parent workflow (createInvoice) owns the transaction and commits.
-  void createInvoiceInTransaction(Transaction transaction,
-      {required String storeId,
-      required String companyId,
-      required String companyName,
-      required String? supplierInvoiceNumber,
-      required int totalAmountFils,
-      required int shopCashAmountFils,
-      required int outsideCashAmountFils,
-      required int supplierDebtAmountFils,
-      required String createdBy,
-      required List<String> photoIds}) {
-    final invoiceRef =
-        purchaseInvoices(storeId).doc(totalAmountFils.toString());
-    transaction.set(invoiceRef, {
-      'companyId': companyId,
-      'companyName': companyName,
-      if (supplierInvoiceNumber != null)
-        'supplierInvoiceNumber': supplierInvoiceNumber,
-      'totalAmountFils': totalAmountFils,
-      'shopCashAmountFils': shopCashAmountFils,
-      'outsideCashAmountFils': outsideCashAmountFils,
-      'supplierDebtAmountFils': supplierDebtAmountFils,
-      'notes': null,
-      'status': 'ACTIVE',
-      'createdAt': FieldValue.serverTimestamp(),
-      'createdBy': createdBy,
-      'operationId': totalAmountFils.hashCode.toString(),
-      'photoIds': photoIds,
-    });
-  }
-
-  /// Writes a supplier debt document within a parent transaction.
-  /// The parent workflow owns the transaction and commits.
-  void createDebtInTransaction(Transaction transaction,
-      {required String storeId,
-      required String companyId,
-      required String companyName,
-      required int originalAmountFils,
-      required int remainingAmountFils,
-      required String createdBy}) {
-    final debtRef =
-        supplierDebts(storeId).doc(originalAmountFils.toString());
-    transaction.set(debtRef, {
-      'invoiceId': originalAmountFils.toString(),
-      'companyId': companyId,
-      'companyName': companyName,
-      'originalAmountFils': originalAmountFils,
-      'remainingAmountFils': remainingAmountFils,
-      'status': 'OPEN',
-      'createdAt': FieldValue.serverTimestamp(),
-      'createdBy': createdBy,
-      'operationId': originalAmountFils.toString(),
-      'lastOperationId': originalAmountFils.toString(),
-    });
-  }
-
-  /// Writes an automatic cash withdrawal (linked to purchase invoice)
-  /// within a parent transaction. Only called when shopCash > 0.
-  void createAutomaticWithdrawalInTransaction(Transaction transaction,
-      {required String storeId,
-      required int amountFils,
-      required String createdBy}) {
-    final withdrawalRef =
-        cashWithdrawals(storeId).doc('invoice_$amountFils');
-    transaction.set(withdrawalRef, {
-      'amountFils': amountFils,
-      'type': 'PURCHASE_INVOICE',
-      'invoiceId': amountFils.toString(),
-      'createdAt': FieldValue.serverTimestamp(),
-      'createdBy': createdBy,
-      'status': 'ACTIVE',
-    });
-  }
-
-  /// Writes a financial operation/idempotency record within a parent transaction.
-  /// The parent workflow owns the transaction and commits.
-  /// Status is finalized as COMPLETED in V1 (same atomic workflow, no separate completion transaction).
-  void createOperationInTransaction(Transaction transaction,
-      {required String storeId,
-      required String operationId,
-      required String createdBy}) {
-    final operationRef = operations(storeId).doc(operationId);
-    transaction.set(operationRef, {
-      'operationId': operationId,
-      'type': 'CREATE_PURCHASE_INVOICE',
-      'createdBy': createdBy,
-      'createdAt': FieldValue.serverTimestamp(),
-      'status': 'COMPLETED',
-      'retryCount': 0,
-    });
+    // ----- Return the invoice ID -----
+    return operationId;
   }
 }
