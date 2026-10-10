@@ -54,6 +54,22 @@ class PriceAmount {
     return includeCurrency ? '$formatted د.أ' : formatted;
   }
 
+  /// Formats a stored فلس amount as JOD with exactly two decimal places
+  /// (e.g. `1.50 د.أ`), using integer arithmetic only. Amounts entered with
+  /// two decimals are multiples of 10 فلس so this is lossless for them; any
+  /// older amount that is not a multiple of 10 فلس is rounded to the nearest
+  /// قرش for display only — the stored value is never changed.
+  static String formatJod2(int fils, {bool includeCurrency = true}) {
+    final sign = fils < 0 ? '-' : '';
+    final absolute = fils.abs();
+    // Round to the nearest 10 فلس (0.01 د.أ). Integer-only, no double.
+    final rounded = ((absolute + 5) ~/ 10) * 10;
+    final whole = rounded ~/ filsPerJod;
+    final fraction = (rounded % filsPerJod) ~/ 10; // 0..99
+    final formatted = '$sign$whole.${fraction.toString().padLeft(2, '0')}';
+    return includeCurrency ? '$formatted د.أ' : formatted;
+  }
+
   /// Formats a stored فلس amount as قرش using exact integer arithmetic (no
   /// double). A whole قرش shows without a fraction; a sub-قرش remainder shows
   /// one decimal digit because 1 قرش = 10 فلس exactly.

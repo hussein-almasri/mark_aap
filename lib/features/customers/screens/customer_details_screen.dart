@@ -208,17 +208,27 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                 TextFormField(
                   controller: amountController,
                   keyboardType:
-                      const TextInputType.numberWithOptions(decimal: false),
+                      const TextInputType.numberWithOptions(decimal: true),
                   decoration: const InputDecoration(
-                    labelText: 'المبلغ (قرش)',
+                    labelText: 'المبلغ (د.أ)',
+                    hintText: 'مثال: 1.50',
                     border: OutlineInputBorder(),
+                    suffixText: 'د.أ',
                   ),
                   validator: (value) {
                     final amount = value?.trim() ?? '';
                     if (amount.isEmpty) return 'المبلغ مطلوب.';
-                    final amountInt = int.tryParse(amount);
-                    if (amountInt == null) return 'مبلغ غير صحيح.';
-                    if (amountInt <= 0) return 'يجب أن يكون أكبر من صفر.';
+                    // Accept an integer part with up to two decimal places.
+                    if (!RegExp(r'^\d+(\.\d{1,2})?$').hasMatch(amount)) {
+                      return 'مبلغ غير صحيح؛ يقبل رقمين عشريين كحد أقصى.';
+                    }
+                    int fils;
+                    try {
+                      fils = PriceAmount.parseJodToFils(amount);
+                    } on FormatException {
+                      return 'مبلغ غير صحيح.';
+                    }
+                    if (fils <= 0) return 'يجب أن يكون أكبر من صفر.';
                     return null;
                   },
                 ),
@@ -232,7 +242,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                   const SizedBox(height: 8),
                   Text(
                     _balance != null
-                        ? 'الرصيد: ${PriceAmount.formatQirsh(_balance!)}'
+                        ? 'الرصيد: ${PriceAmount.formatJod2(_balance!)}'
                         : 'جاري حساب الرصيد...',
                   ),
                 ],
@@ -260,13 +270,19 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                   ? null
                   : () {
                       if (!formKey.currentState!.validate()) return;
-                      final parsed = int.tryParse(amountController.text.trim());
-                      if (parsed == null) return;
+                      final raw = amountController.text.trim();
+                      int fils;
+                      try {
+                        fils = PriceAmount.parseJodToFils(raw);
+                      } on FormatException {
+                        return;
+                      }
+                      if (fils <= 0) return;
                       saving.value = true;
                       Navigator.of(dialogContext).pop((
-                        // The user enters integer قرش; storage stays in فلس
-                        // (1 قرش = 10 فلس) so existing documents are unaffected.
-                        amount: PriceAmount.qirshToFils(parsed),
+                        // The user enters JOD (e.g. 1.50); storage stays in
+                        // فلس (1 د.أ = 1000 فلس). Integer-only conversion.
+                        amount: fils,
                         note: noteController.text.trim().isEmpty
                             ? null
                             : noteController.text.trim(),
@@ -359,7 +375,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                                   const SizedBox(width: 4),
                                   Text(
                                     _balance != null
-                                        ? 'الرصيد: ${PriceAmount.formatQirsh(_balance!)}'
+                                        ? 'الرصيد: ${PriceAmount.formatJod2(_balance!)}'
                                         : 'جاري حساب الرصيد...',
                                   ),
                                 ],
@@ -431,7 +447,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
     final isCancelled = tx.status.value == CustomerTransactionStatus.cancelled.value;
     final typeLabel = tx.type.value == 'DEBT' ? 'دين' : 'مدفوعة';
     final statusText = isCancelled ? 'ملغاة' : 'نشطة';
-    final isAdmin = widget.user.isAdmin;
+    final note = tx.note;
 
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
@@ -452,7 +468,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    '$typeLabel - ${PriceAmount.formatQirsh(tx.amountFils)}',
+                    '$typeLabel - ${PriceAmount.formatJod2(tx.amountFils)}',
                     style: const TextStyle(fontWeight: FontWeight.w500),
                   ),
                   Text(
@@ -462,6 +478,20 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                       fontSize: 12,
                     ),
                   ),
+                  // Only render a note line when one was actually saved;
+                  // never show placeholder text for an empty note.
+                  if (note != null && note.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(
+                        'ملاحظة: $note',
+                        style: TextStyle(
+                          color: Colors.grey[700],
+                          fontSize: 12,
+                          fontStyle: FontStyle.italic,
+                        ),
+                      ),
+                    ),
                 ],
               ),
             ),

@@ -35,20 +35,26 @@ Future<({int amount, String? note})?> _showTransactionForm(
             children: [
               TextFormField(
                 controller: amountController,
-                keyboardType: const TextInputType.numberWithOptions(decimal: false),
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
                 decoration: const InputDecoration(
-                  labelText: 'المبلغ (قرش)',
+                  labelText: 'المبلغ (د.أ)',
+                  hintText: 'مثال: 1.50',
                   border: OutlineInputBorder(),
+                  suffixText: 'د.أ',
                 ),
                 validator: (value) {
                   final text = value?.trim() ?? '';
                   if (text.isEmpty) return 'المبلغ مطلوب.';
-                  final amount = int.tryParse(text);
-                  if (amount == null) return 'مبلغ غير صحيح.';
-                  if (amount <= 0) return 'يجب أن يكون أكبر من صفر.';
-                  if (transactionType == 'payment' && customer.debtEnabled == false) {
-                    return null;
+                  if (!RegExp(r'^\d+(\.\d{1,2})?$').hasMatch(text)) {
+                    return 'مبلغ غير صحيح؛ يقبل رقمين عشريين كحد أقصى.';
                   }
+                  int fils;
+                  try {
+                    fils = PriceAmount.parseJodToFils(text);
+                  } on FormatException {
+                    return 'مبلغ غير صحيح.';
+                  }
+                  if (fils <= 0) return 'يجب أن يكون أكبر من صفر.';
                   return null;
                 },
               ),
@@ -84,13 +90,18 @@ Future<({int amount, String? note})?> _showTransactionForm(
                 : () {
                     if (!formKey.currentState!.validate()) return;
                     final rawValue = amountController.text.trim();
-                    final parsedAmount = int.tryParse(rawValue);
-                    if (parsedAmount == null) return;
+                    int fils;
+                    try {
+                      fils = PriceAmount.parseJodToFils(rawValue);
+                    } on FormatException {
+                      return;
+                    }
+                    if (fils <= 0) return;
                     saving.value = true;
                     Navigator.of(dialogContext).pop((
-                      // User enters integer قرش; storage stays in فلس
-                      // (1 قرش = 10 فلس) so existing documents are unaffected.
-                      amount: PriceAmount.qirshToFils(parsedAmount),
+                      // User enters JOD (e.g. 1.50); storage stays in فلس
+                      // (1 د.أ = 1000 فلس). Integer-only conversion.
+                      amount: fils,
                       note: noteController.text.trim().isEmpty
                           ? null
                           : noteController.text.trim(),
