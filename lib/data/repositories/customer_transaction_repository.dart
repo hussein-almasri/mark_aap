@@ -64,6 +64,29 @@ class CustomerTransactionRepository {
     return trimmed.isEmpty ? null : trimmed;
   }
 
+  /// Reads the current document for a caller-supplied [transactionId], if any.
+  ///
+  /// Deliberately a collection query rather than a single-document read:
+  /// the `get` rule for transactions dereferences `resource.data`, which is
+  /// `null` for a document that does not exist yet, so a single-doc read is
+  /// denied for non-admin callers. A query is governed by the `list` rule,
+  /// which both roles satisfy for an active customer. The `set` inside the
+  /// transaction is still rejected by the `create` rule if the document
+  /// already exists, so this check exists only to keep retries clean.
+  Future<Map<String, dynamic>?> _readExistingTransaction(
+    String storeId,
+    String customerId,
+    String transactionId,
+  ) async {
+    final snapshot =
+        await _transactions(storeId, customerId)
+            .where(FieldPath.documentId, isEqualTo: transactionId)
+            .limit(1)
+            .get();
+    if (snapshot.docs.isEmpty) return null;
+    return snapshot.docs.first.data();
+  }
+
   Stream<List<CustomerTransactionModel>> watchTransactions(
       String storeId, String customerId) {
     return _transactions(storeId, customerId)
@@ -110,25 +133,29 @@ class CustomerTransactionRepository {
         ? _transactions(storeId, customerId).doc()
         : _transactions(storeId, customerId).doc(transactionId);
 
-    return _firestore.runTransaction((transaction) async {
-      // When the caller supplied a stable id, read before writing so a retry
-      // of the same logical operation cannot post a second financial effect.
-      if (transactionId != null) {
-        final existing = await transaction.get(debtRef);
-        if (existing.exists) {
-          final data = existing.data();
-          if (_isSameOperation(data,
-              type: 'DEBT', amountFils: amountFils, createdBy: createdBy)) {
-            // Idempotent replay: the debt is already recorded. Commit a
-            // read-only transaction and report success.
-            return debtRef.id;
-          }
-          // Same id but a different operation: refuse explicitly rather than
-          // silently creating or overwriting a second financial record.
-          throw const CustomerTransactionAlreadyExistsException();
+    // Idempotency pre-check, run OUTSIDE the transaction and as a collection
+    // query. See _readExistingTransaction for why this cannot be a
+    // transaction.get() on the target ref: it would be denied for employees.
+    if (transactionId != null) {
+      final existing = await _readExistingTransaction(
+        storeId,
+        customerId,
+        transactionId,
+      );
+      if (existing != null) {
+        if (_isSameOperation(existing,
+            type: 'DEBT', amountFils: amountFils, createdBy: createdBy)) {
+          // Idempotent replay: the debt is already recorded. Report success
+          // without touching Firestore.
+          return debtRef.id;
         }
+        // Same id but a different operation: refuse explicitly rather than
+        // silently creating or overwriting a second financial record.
+        throw const CustomerTransactionAlreadyExistsException();
       }
+    }
 
+    return _firestore.runTransaction((transaction) async {
       transaction.set(debtRef, {
         'type': 'DEBT',
         'amountFils': amountFils,
@@ -171,21 +198,25 @@ class CustomerTransactionRepository {
         ? _transactions(storeId, customerId).doc()
         : _transactions(storeId, customerId).doc(transactionId);
 
-    return _firestore.runTransaction((transaction) async {
-      // Same idempotent-replay guard as createDebt: a retried payment with a
-      // stable id must not debit the customer twice.
-      if (transactionId != null) {
-        final existing = await transaction.get(paymentRef);
-        if (existing.exists) {
-          final data = existing.data();
-          if (_isSameOperation(data,
-              type: 'PAYMENT', amountFils: amountFils, createdBy: createdBy)) {
-            return paymentRef.id;
-          }
-          throw const CustomerTransactionAlreadyExistsException();
+    // Same idempotent-replay guard as createDebt: a retried payment with a
+    // stable id must not debit the customer twice. Runs outside the
+    // transaction for the same rules-safety reason.
+    if (transactionId != null) {
+      final existing = await _readExistingTransaction(
+        storeId,
+        customerId,
+        transactionId,
+      );
+      if (existing != null) {
+        if (_isSameOperation(existing,
+            type: 'PAYMENT', amountFils: amountFils, createdBy: createdBy)) {
+          return paymentRef.id;
         }
+        throw const CustomerTransactionAlreadyExistsException();
       }
+    }
 
+    return _firestore.runTransaction((transaction) async {
       transaction.set(paymentRef, {
         'type': 'PAYMENT',
         'amountFils': amountFils,

@@ -12,6 +12,7 @@ import {
   collection,
   deleteDoc,
   doc,
+  documentId,
   getDoc,
   getDocs,
   query,
@@ -789,26 +790,28 @@ const cleanNote = (note) => {
   return trimmed === '' ? null : trimmed;
 };
 
-// Mirror of CustomerTransactionRepository.createDebt/createPayment for the
-// note-bearing write path: read-before-write, conditional set, note persisted.
+// Mirror of CustomerTransactionRepository.createDebt/createPayment: the
+// idempotency pre-check runs OUTSIDE the transaction as a collection query
+// (list-rule safe for employees), then a plain transaction.set follows.
 async function repoCreateTxn(db, txnId, { type, amountFils, createdBy, note }) {
   const ref = TXN(db, 'store-1', 'customer-1', txnId);
-  return runTransaction(db, async (tx) => {
-    const existing = await tx.get(ref);
-    if (existing.exists()) {
-      const data = existing.data();
-      if (data.type === type &&
-          data.amountFils === amountFils &&
-          data.createdBy === createdBy) {
-        return txnId; // idempotent replay: no write
-      }
-      const err = new Error('CustomerTransactionAlreadyExists');
-      err.code = 'already-exists';
-      throw err;
+  const col = collection(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions');
+  const existingSnapshot = await getDocs(query(col, where(documentId(), '==', txnId)));
+  if (!existingSnapshot.empty) {
+    const data = existingSnapshot.docs[0].data();
+    if (data.type === type &&
+        data.amountFils === amountFils &&
+        data.createdBy === createdBy) {
+      return txnId; // idempotent replay: no write
     }
-    const payload = type === 'DEBT'
-      ? debtPayload(createdBy, { amountFils, note: cleanNote(note) })
-      : paymentPayload(createdBy, { amountFils, note: cleanNote(note) });
+    const err = new Error('CustomerTransactionAlreadyExists');
+    err.code = 'already-exists';
+    throw err;
+  }
+  const payload = type === 'DEBT'
+    ? debtPayload(createdBy, { amountFils, note: cleanNote(note) })
+    : paymentPayload(createdBy, { amountFils, note: cleanNote(note) });
+  return runTransaction(db, async (tx) => {
     tx.set(ref, payload);
     return txnId;
   });
@@ -940,4 +943,111 @@ test('Idempotent replay preserves the original note', async () => {
   const doc = await getDoc(TXN(db, 'store-1', 'customer-1', 'note-replay'));
   assert.equal(doc.data().note, 'الأصلية', 'replay must not overwrite the stored note');
   assert.equal(await countDebts(db), 1, 'replay must not post a second debt');
+});
+
+// ---------------------------------------------------------------------------
+// Phase 4O — employee debt/payment with a stable transactionId.
+//
+// Regression for the reported bug: saving a debt or payment from customer
+// details failed for employees. Root cause was the in-transaction
+// transaction.get(ref) on a not-yet-existing document: the `get` rule
+// dereferences resource.data.type, which is null, so the read was denied
+// before any write could happen. Admins were unaffected because isAdmin
+// short-circuits. These tests pin the fixed behaviour.
+// ---------------------------------------------------------------------------
+
+// 7.1 A single-document get of a transaction that does not exist yet is
+// denied for employees — this is exactly why the repository no longer reads
+// inside the transaction. Proves the constraint the fix works around.
+test('Employee single-doc get of a missing transaction is denied (why the fix exists)', async () => {
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await createCustomerBaseline(db);
+  await assertFails(getDoc(TXN(db, 'store-1', 'customer-1', 'emp-missing')));
+});
+
+// 7.2 Employee can create a debt carrying a stable transactionId.
+// Previously this was the failing path; it must now succeed.
+test('Employee can create debt with a stable transactionId', async () => {
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await createCustomerBaseline(db);
+  await assertSucceeds(repoCreateTxn(db, 'emp-debt-1', {
+    type: 'DEBT', amountFils: 4000, createdBy: 'employee-1', note: 'دين موظف',
+  }));
+  const created = await getDoc(TXN(db, 'store-1', 'customer-1', 'emp-debt-1'));
+  assert.equal(created.exists(), true);
+  assert.equal(created.data().type, 'DEBT');
+  assert.equal(created.data().amountFils, 4000);
+  assert.equal(created.data().createdBy, 'employee-1');
+  assert.equal(created.data().note, 'دين موظف');
+});
+
+// 7.3 Employee can create a payment carrying a stable transactionId.
+test('Employee can create payment with a stable transactionId', async () => {
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await createCustomerBaseline(db, { debtEnabled: false });
+  await assertSucceeds(repoCreateTxn(db, 'emp-pay-1', {
+    type: 'PAYMENT', amountFils: 1500, createdBy: 'employee-1',
+  }));
+  const created = await getDoc(TXN(db, 'store-1', 'customer-1', 'emp-pay-1'));
+  assert.equal(created.exists(), true);
+  assert.equal(created.data().type, 'PAYMENT');
+  assert.equal(created.data().amountFils, 1500);
+});
+
+// 7.4 Employee retry of the same logical operation is idempotent.
+test('Employee idempotent replay does not duplicate the debt', async () => {
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await createCustomerBaseline(db);
+  await assertSucceeds(repoCreateTxn(db, 'emp-replay', {
+    type: 'DEBT', amountFils: 3000, createdBy: 'employee-1', note: 'أول محاولة',
+  }));
+  const replayed = await repoCreateTxn(db, 'emp-replay', {
+    type: 'DEBT', amountFils: 3000, createdBy: 'employee-1',
+  });
+  assert.equal(replayed, 'emp-replay');
+  const doc = await getDoc(TXN(db, 'store-1', 'customer-1', 'emp-replay'));
+  assert.equal(doc.data().note, 'أول محاولة', 'replay must not overwrite the note');
+  assert.equal(await countDebts(db), 1, 'replay must not post a second debt');
+});
+
+// 7.5 Reusing an employee transactionId for a different operation is refused
+// explicitly rather than silently overwriting.
+test('Employee reusing a transactionId for a different operation is rejected', async () => {
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await createCustomerBaseline(db);
+  await assertSucceeds(repoCreateTxn(db, 'emp-conflict', {
+    type: 'DEBT', amountFils: 2000, createdBy: 'employee-1',
+  }));
+  await assertFails(repoCreateTxn(db, 'emp-conflict', {
+    type: 'PAYMENT', amountFils: 2000, createdBy: 'employee-1',
+  }));
+  const doc = await getDoc(TXN(db, 'store-1', 'customer-1', 'emp-conflict'));
+  assert.equal(doc.data().type, 'DEBT', 'the original document must be untouched');
+});
+
+// 7.6 Rules remain the safety backstop: a plain set onto an existing
+// transaction is still denied, so the out-of-transaction pre-check being a
+// best-effort read cannot be used to overwrite a record.
+test('Rules still deny overwriting an existing transaction after the fix', async () => {
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await createCustomerBaseline(db);
+  await assertSucceeds(repoCreateTxn(db, 'emp-backstop', {
+    type: 'DEBT', amountFils: 1000, createdBy: 'employee-1',
+  }));
+  await assertFails(setDoc(TXN(db, 'store-1', 'customer-1', 'emp-backstop'), {
+    type: 'DEBT', amountFils: 999999, createdBy: 'employee-1',
+  }));
+});
+
+// 7.7 Balance written by an employee with a stable transactionId is correct.
+test('Employee debt and payment with stable ids produce the right balance', async () => {
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await createCustomerBaseline(db);
+  await assertSucceeds(repoCreateTxn(db, 'emp-bal-d', {
+    type: 'DEBT', amountFils: 9000, createdBy: 'employee-1',
+  }));
+  await assertSucceeds(repoCreateTxn(db, 'emp-bal-p', {
+    type: 'PAYMENT', amountFils: 2500, createdBy: 'employee-1',
+  }));
+  assert.equal(await calculateBalance(db), 6500);
 });
