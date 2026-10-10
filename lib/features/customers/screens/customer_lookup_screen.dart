@@ -6,9 +6,17 @@ import '../../../data/repositories/customer_repository.dart';
 import 'customer_details_screen.dart';
 
 class CustomerLookupScreen extends StatefulWidget {
-  const CustomerLookupScreen({required this.user, super.key});
+  const CustomerLookupScreen({
+    required this.user,
+    this.title = 'العملاء',
+    super.key,
+  });
 
   final UserModel user;
+
+  /// Presented title. Debt management reuses this screen under its own name
+  /// so the search/history flow is not duplicated.
+  final String title;
 
   @override
   State<CustomerLookupScreen> createState() => _CustomerLookupScreenState();
@@ -76,7 +84,7 @@ class _CustomerLookupScreenState extends State<CustomerLookupScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('العملاء')),
+      appBar: AppBar(title: Text(widget.title)),
       body: Column(
         children: [
           Padding(

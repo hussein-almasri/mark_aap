@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../../data/models/user_model.dart';
 import '../../companies/screens/company_management_screen.dart';
 import '../../customers/screens/customer_management_screen.dart';
+import '../../debts/screens/debt_management_screen.dart';
 import 'employee_management_screen.dart';
 import 'store_join_code_screen.dart';
 import '../../products/screens/product_list_screen.dart';
@@ -81,6 +82,23 @@ class AdminDashboard extends StatelessWidget {
             onTap: () => Navigator.of(context).push<void>(
               MaterialPageRoute(
                 builder: (_) => CustomerManagementScreen(user: user),
+              ),
+            ),
+          ),
+        ),
+        Card(
+          child: ListTile(
+            leading: const CircleAvatar(
+              child: Icon(Icons.account_balance_wallet_outlined),
+            ),
+            title: const Text('إدارة الديون'),
+            subtitle: const Text(
+              'الرصيد وسجل الديون والدفعات وتسجيل المعاملات',
+            ),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push<void>(
+              MaterialPageRoute(
+                builder: (_) => DebtManagementScreen(user: user),
               ),
             ),
           ),
