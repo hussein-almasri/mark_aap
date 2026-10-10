@@ -287,55 +287,6 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
     return result;
   }
 
-  // Admin: cancel transaction
-  Future<void> _adminCancelTransaction(
-      CustomerTransactionModel transaction) async {
-    if (transaction.status.value == CustomerTransactionStatus.cancelled.value) {
-      _showMessage('هذه المعاملة ملغاة بالفعل');
-      return;
-    }
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('إلغاء المعاملة'),
-        content: Text(
-            'هل تريد إلغاء هذه المعاملة لـ ${_customer?.name}؟'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('إلغاء'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('إلغاء'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
-
-    try {
-      await _txRepo.adminCancelTransaction(
-        storeId: widget.user.storeId,
-        customerId: widget.customerId,
-        transactionId: transaction.transactionId,
-        cancelledBy: widget.user.uid,
-        cancellationReason:
-            'ملغاة من قبل المسؤول',
-      );
-      _showMessage('تم إلغاء المعاملة');
-      _loadTransactions();
-    } catch (e) {
-      String message;
-      if (e.toString().contains('must have no cancellation metadata')) {
-        message = 'النشاملة يجب أن تكون فارغة للمعاملة النشطة';
-      } else {
-        message = 'تعذر إلغاء المعاملة';
-      }
-      _showMessage(message);
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final isAdmin = widget.user.isAdmin;
@@ -367,18 +318,6 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text('${_customer?.name ?? ''} - تفاصيل'),
-        actions: [
-          if (isAdmin) ...[
-            IconButton(
-              icon: const Icon(Icons.delete_outline),
-              tooltip: 'تعطيل العميل',
-              onPressed: () {
-                // Could show dialog to deactivate customer
-                _showMessage('تعطيل العميل من هنا');
-              },
-            ),
-          ],
-        ],
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
@@ -526,15 +465,6 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                 ],
               ),
             ),
-            if (isAdmin) ...[
-              const SizedBox(width: 4),
-              if (!isCancelled)
-                IconButton(
-                  icon: const Icon(Icons.remove_circle_outline),
-                  tooltip: 'إلغاء المعاملة',
-                  onPressed: () => _adminCancelTransaction(tx),
-                ),
-            ],
           ],
         ),
       ),
