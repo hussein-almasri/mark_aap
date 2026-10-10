@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import '../../../core/utils/price_amount.dart';
 import '../../../data/models/customer_model.dart';
 import '../../../data/models/customer_transaction_model.dart';
 import '../../../data/models/user_model.dart';
@@ -204,7 +205,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                   keyboardType:
                       const TextInputType.numberWithOptions(decimal: false),
                   decoration: const InputDecoration(
-                    labelText: 'المبلغ (فلس)',
+                    labelText: 'المبلغ (قرش)',
                     border: OutlineInputBorder(),
                   ),
                   validator: (value) {
@@ -226,7 +227,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                   const SizedBox(height: 8),
                   Text(
                     _balance != null
-                        ? 'الرصيد: $_balance Fils'
+                        ? 'الرصيد: ${PriceAmount.formatQirsh(_balance!)}'
                         : 'جاري حساب الرصيد...',
                   ),
                 ],
@@ -258,7 +259,9 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                       if (parsed == null) return;
                       saving.value = true;
                       Navigator.of(dialogContext).pop((
-                        amount: parsed,
+                        // The user enters integer قرش; storage stays in فلس
+                        // (1 قرش = 10 فلس) so existing documents are unaffected.
+                        amount: PriceAmount.qirshToFils(parsed),
                         note: noteController.text.trim().isEmpty
                             ? null
                             : noteController.text.trim(),
@@ -412,7 +415,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                                   const SizedBox(width: 4),
                                   Text(
                                     _balance != null
-                                        ? 'الرصيد: ${_balance} Fils'
+                                        ? 'الرصيد: ${PriceAmount.formatQirsh(_balance!)}'
                                         : 'جاري حساب الرصيد...',
                                   ),
                                 ],
@@ -505,7 +508,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    '$typeLabel - ${tx.amountFils} Fils',
+                    '$typeLabel - ${PriceAmount.formatQirsh(tx.amountFils)}',
                     style: const TextStyle(fontWeight: FontWeight.w500),
                   ),
                   Text(

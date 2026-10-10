@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
+import '../../../core/utils/price_amount.dart';
 import '../../../data/models/customer_model.dart';
 import '../../../data/repositories/customer_transaction_repository.dart';
 
@@ -36,7 +37,7 @@ Future<({int amount, String? note})?> _showTransactionForm(
                 controller: amountController,
                 keyboardType: const TextInputType.numberWithOptions(decimal: false),
                 decoration: const InputDecoration(
-                  labelText: 'المبلغ (فلس)',
+                  labelText: 'المبلغ (قرش)',
                   border: OutlineInputBorder(),
                 ),
                 validator: (value) {
@@ -87,7 +88,9 @@ Future<({int amount, String? note})?> _showTransactionForm(
                     if (parsedAmount == null) return;
                     saving.value = true;
                     Navigator.of(dialogContext).pop((
-                      amount: parsedAmount,
+                      // User enters integer قرش; storage stays in فلس
+                      // (1 قرش = 10 فلس) so existing documents are unaffected.
+                      amount: PriceAmount.qirshToFils(parsedAmount),
                       note: noteController.text.trim().isEmpty
                           ? null
                           : noteController.text.trim(),
