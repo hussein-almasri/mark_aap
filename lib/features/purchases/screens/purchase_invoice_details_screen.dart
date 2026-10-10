@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart' show Timestamp;
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -6,6 +8,7 @@ import '../../../core/utils/price_amount.dart';
 import '../../../data/models/purchase_invoice_model.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/repositories/purchase_invoice_repository.dart';
+import '../../../data/repositories/user_repository.dart';
 
 /// Read-only detail view of one purchase invoice.
 ///
@@ -18,12 +21,14 @@ class PurchaseInvoiceDetailsScreen extends StatefulWidget {
     required this.user,
     required this.invoiceId,
     this.repository,
+    this.userRepository,
     super.key,
   });
 
   final UserModel user;
   final String invoiceId;
   final PurchaseInvoiceRepository? repository;
+  final UserRepository? userRepository;
 
   @override
   State<PurchaseInvoiceDetailsScreen> createState() =>
@@ -34,10 +39,21 @@ class _PurchaseInvoiceDetailsScreenState
     extends State<PurchaseInvoiceDetailsScreen> {
   late final PurchaseInvoiceRepository _repository =
       widget.repository ?? PurchaseInvoiceRepository();
+  late final UserRepository _userRepository =
+      widget.userRepository ?? UserRepository();
 
   PurchaseInvoiceModel? _invoice;
   bool _isLoading = true;
   String? _loadError;
+
+  /// Resolved display name for the invoice creator, or `null` while loading or
+  /// when no name is available.
+  String? _creatorName;
+
+  /// Tracks the lookup that is in flight or already attempted, so a rebuild
+  /// never triggers a second Firestore read for the same creator.
+  String? _resolvedCreatorUid;
+  bool _isResolvingCreator = false;
 
   @override
   void initState() {
@@ -61,6 +77,7 @@ class _PurchaseInvoiceDetailsScreenState
         _invoice = invoice;
         _isLoading = false;
       });
+      unawaited(_resolveCreatorName(invoice.createdBy));
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -68,6 +85,33 @@ class _PurchaseInvoiceDetailsScreenState
         _isLoading = false;
       });
     }
+  }
+
+  /// Resolves [createdBy] to a display name exactly once per creator.
+  ///
+  /// Best-effort: failures fall back to `null` (rendered as «غير معروف») and
+  /// never surface an error, because cross-user profile reads are denied by
+  /// security rules for many viewer/creator pairs.
+  Future<void> _resolveCreatorName(String createdBy) async {
+    if (_resolvedCreatorUid == createdBy) return;
+    setState(() {
+      _resolvedCreatorUid = createdBy;
+      _isResolvingCreator = true;
+      _creatorName = null;
+    });
+    String? name;
+    try {
+      name = await _userRepository.getDisplayName(uid: createdBy);
+    } catch (_) {
+      // Contain any lookup failure so the row falls back to «غير معروف»
+      // instead of hanging or crashing the screen.
+      name = null;
+    }
+    if (!mounted) return;
+    setState(() {
+      _creatorName = name;
+      _isResolvingCreator = false;
+    });
   }
 
   /// Surfaces only the failure kind — never document contents or ids.
@@ -178,7 +222,10 @@ class _PurchaseInvoiceDetailsScreenState
               Icons.calendar_today_outlined,
               'التاريخ: ${_formatDate(invoice.createdAt)}',
             ),
-            _infoRow(Icons.person_outline, 'أُنشئت بواسطة: ${invoice.createdBy}'),
+            _infoRow(
+              Icons.person_outline,
+              'أُنشئت بواسطة: ${_creatorLabel()}',
+            ),
           ],
         ),
       ),
@@ -250,6 +297,15 @@ class _PurchaseInvoiceDetailsScreenState
       ],
     ),
   );
+
+  /// Label for the "created by" row: the resolved name, a neutral
+  /// placeholder while loading, or «غير معروف» when no name is available.
+  ///
+  /// Never renders the raw `createdBy` UID.
+  String _creatorLabel() {
+    if (_isResolvingCreator) return 'جارٍ التحميل...';
+    return _creatorName ?? 'غير معروف';
+  }
 
   String _formatDate(Timestamp timestamp) =>
       DateFormat('dd/MM/yyyy - HH:mm').format(timestamp.toDate());

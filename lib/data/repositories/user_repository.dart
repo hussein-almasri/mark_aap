@@ -78,6 +78,37 @@ class UserRepository {
     return getUserProfile(storeId: storeId, uid: uid, accountData: userData);
   }
 
+  /// Best-effort read of the global profile `users/{uid}` for display only.
+  ///
+  /// Returns the trimmed `displayName`, or `null` when the profile is missing,
+  /// the name is empty/not a string, or the read is denied. Security rules let
+  /// a user read only their own profile (or an owner Admin read an employee's),
+  /// so cross-user lookups frequently fail by design; callers must treat `null`
+  /// as "no name available" and show a generic label instead of a raw UID.
+  ///
+  /// Prefer this over [getUserProfile] when only a human-readable label is
+  /// needed: it reads a single document and never fails the caller.
+  Future<String?> getDisplayName({required String uid}) async {
+    try {
+      final document = await _users.doc(uid).get();
+      if (!document.exists) {
+        return null;
+      }
+      final data = document.data();
+      if (data == null) {
+        return null;
+      }
+      final raw = data['displayName'];
+      if (raw is! String) {
+        return null;
+      }
+      final trimmed = raw.trim();
+      return trimmed.isEmpty ? null : trimmed;
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<UserModel?> getUserProfile({
     required String storeId,
     required String uid,
