@@ -47,14 +47,18 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
       final customer =
           await _customerRepo.getCustomer(widget.user.storeId, widget.customerId);
       setState(() => _customer = customer);
-    } catch (_) {
+    } catch (e) {
       if (!mounted) return;
-      setState(() => _loadError = 'تعذر تحميل بيانات العميل');
+      setState(() => _loadError = _describeError(e));
     }
   }
 
   Future<void> _loadTransactions() async {
-    if (_customer == null) return;
+    // No `_customer == null` guard here: the queries below use
+    // widget.customerId, which is available immediately. Guarding on _customer
+    // made this method return synchronously on the first call from initState
+    // (because _loadCustomer had not resolved yet), which skipped the finally
+    // block below and left _isLoading stuck at true — an endless spinner.
     setState(() {
       _isLoading = true;
       _loadError = null;
@@ -64,11 +68,18 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
         widget.user.storeId,
         widget.customerId,
       );
-      setState(() => _transactions = txs);
-      _computeBalance();
-    } catch (_) {
+      final balance = await _txRepo.calculateBalanceAsync(
+        widget.user.storeId,
+        widget.customerId,
+      );
       if (!mounted) return;
-      setState(() => _loadError = 'تعذر تحميل المعاملات');
+      setState(() {
+        _transactions = txs;
+        _balance = balance;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _loadError = _describeError(e));
     } finally {
       if (mounted) {
         setState(() => _isLoading = false);
@@ -76,14 +87,26 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
     }
   }
 
-  Future<void> _computeBalance() async {
-    if (_customer == null) return;
-    final balance =
-        await _txRepo.calculateBalanceAsync(
-          widget.user.storeId,
-          widget.customerId,
-        );
-    setState(() => _balance = balance);
+  /// Turns a low-level failure into a short user-facing reason.
+  /// Only the failure kind is surfaced — never document contents, amounts or
+  /// user ids.
+  String _describeError(Object error) {
+    final text = error.toString().toLowerCase();
+    if (text.contains('permission') || text.contains('insufficient')) {
+      return 'لا توجد صلاحية لعرض بيانات هذا العميل';
+    }
+    if (text.contains('index')) {
+      return 'الاستعلام يحتاج فهرسًا غير مُفعّل حاليًا';
+    }
+    if (text.contains('unavailable') ||
+        text.contains('network') ||
+        text.contains('timeout')) {
+      return 'تعذر الاتصال بالخادم. تحقق من اتصال الإنترنت';
+    }
+    if (text.contains('not found') || text.contains('does not exist')) {
+      return 'العميل غير موجود';
+    }
+    return 'تعذر تحميل البيانات. حاول مرة أخرى';
   }
 
   void _showMessage(String message) {
