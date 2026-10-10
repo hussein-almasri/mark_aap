@@ -1,48 +1,112 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
-import '../../../data/models/customer_model.dart';
-import '../../../data/repositories/customer_repository.dart';
+import '../../../data/repositories/customer_repository.dart'
+    show CustomerAlreadyExistsException, CustomerRepository;
 
-class CustomerAlreadyExistsException implements Exception {
-  const CustomerAlreadyExistsException();
+/// Raw values captured by the add/edit dialog.
+///
+/// Deliberately not a [CustomerModel]: that model's constructor rejects an
+/// empty `customerId` (customer_model.dart `_requireId`), which is exactly what
+/// the add flow has. Building one inside the dialog's save handler therefore
+/// threw an `ArgumentError` before `Navigator.pop` could run, leaving the
+/// dialog open with a disabled spinner button forever. This is only a data
+/// carrier and cannot throw.
+class CustomerDraft {
+  const CustomerDraft({
+    required this.name,
+    required this.phone,
+    required this.debtEnabled,
+  });
+
+  final String name;
+  final String? phone;
+  final bool debtEnabled;
 }
 
-class CustomerNotFoundException implements Exception {
-  const CustomerNotFoundException();
-}
-
-Future<CustomerModel?> _showCustomerForm(
+Future<CustomerDraft?> _showCustomerForm(
   BuildContext context, {
-  CustomerModel? existingCustomer,
-  required String storeId,
-  required String createdBy,
-}) async {
-  final formKey = GlobalKey<FormState>();
-  final nameController = TextEditingController(
-    text: existingCustomer?.name ?? '',
-  );
-  final phoneController = TextEditingController(
-    text: existingCustomer?.phone ?? '',
-  );
-  final debtEnabledController = ValueNotifier<bool>(
-    existingCustomer?.debtEnabled ?? false,
-  );
-  final saving = ValueNotifier<bool>(false);
-
-  final result = await showDialog<CustomerModel>(
+  required String title,
+  String? initialName,
+  String? initialPhone,
+  bool initialDebtEnabled = false,
+}) {
+  return showDialog<CustomerDraft>(
     context: context,
-    builder: (dialogContext) => AlertDialog(
-      title: Text(
-        existingCustomer == null ? 'إضافة عميل' : 'تعديل عميل',
+    builder: (dialogContext) => _CustomerFormDialog(
+      title: title,
+      initialName: initialName,
+      initialPhone: initialPhone,
+      initialDebtEnabled: initialDebtEnabled,
+    ),
+  );
+}
+
+class _CustomerFormDialog extends StatefulWidget {
+  const _CustomerFormDialog({
+    required this.title,
+    this.initialName,
+    this.initialPhone,
+    this.initialDebtEnabled = false,
+  });
+
+  final String title;
+  final String? initialName;
+  final String? initialPhone;
+  final bool initialDebtEnabled;
+
+  @override
+  State<_CustomerFormDialog> createState() => _CustomerFormDialogState();
+}
+
+class _CustomerFormDialogState extends State<_CustomerFormDialog> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _nameController;
+  late final TextEditingController _phoneController;
+  bool _debtEnabled = false;
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameController = TextEditingController(text: widget.initialName ?? '');
+    _phoneController = TextEditingController(text: widget.initialPhone ?? '');
+    _debtEnabled = widget.initialDebtEnabled;
+  }
+
+  @override
+  void dispose() {
+    // Owned here rather than in the calling function, so the controllers are
+    // released only after the child TextFormFields have unregistered from them.
+    _nameController.dispose();
+    _phoneController.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    if (_saving) return;
+    if (!_formKey.currentState!.validate()) return;
+    setState(() => _saving = true);
+    final rawPhone = _phoneController.text.trim();
+    Navigator.of(context).pop(
+      CustomerDraft(
+        name: _nameController.text.trim(),
+        phone: rawPhone.isEmpty ? null : rawPhone,
+        debtEnabled: _debtEnabled,
       ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.title),
       content: Form(
-        key: formKey,
+        key: _formKey,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             TextFormField(
-              controller: nameController,
+              controller: _nameController,
               autofocus: true,
               decoration: const InputDecoration(
                 labelText: 'اسم العميل',
@@ -57,7 +121,7 @@ Future<CustomerModel?> _showCustomerForm(
             ),
             const SizedBox(height: 12),
             TextFormField(
-              controller: phoneController,
+              controller: _phoneController,
               keyboardType: TextInputType.phone,
               decoration: const InputDecoration(
                 labelText: 'رقم الهاتف (اختياري)',
@@ -68,16 +132,10 @@ Future<CustomerModel?> _showCustomerForm(
             Row(
               children: [
                 const Text('تمكين الدين'),
-                ValueListenableBuilder<bool>(
-                  valueListenable: debtEnabledController,
-                  builder: (context, value, child) => Switch(
-                    value: value,
-                    onChanged: saving.value
-                        ? null
-                        : (bool newValue) {
-                            debtEnabledController.value = newValue;
-                          },
-                  ),
+                Switch(
+                  value: _debtEnabled,
+                  onChanged:
+                      _saving ? null : (v) => setState(() => _debtEnabled = v),
                 ),
               ],
             ),
@@ -86,84 +144,62 @@ Future<CustomerModel?> _showCustomerForm(
       ),
       actions: [
         TextButton(
-          onPressed: saving.value ? null : () => Navigator.of(dialogContext).pop(),
+          onPressed: _saving ? null : () => Navigator.of(context).pop(),
           child: const Text('إلغاء'),
         ),
-        ValueListenableBuilder<bool>(
-          valueListenable: saving,
-          builder: (context, isSaving, child) => FilledButton(
-            onPressed: isSaving
-                ? null
-                : () {
-                    if (!formKey.currentState!.validate()) return;
-                    saving.value = true;
-                    final name = nameController.text.trim();
-                    final phone = phoneController.text.trim().isEmpty
-                        ? null
-                        : phoneController.text.trim();
-                    final debtEnabled = debtEnabledController.value;
-                    Navigator.of(dialogContext).pop(
-                      CustomerModel(
-                        customerId: existingCustomer?.customerId ?? '',
-                        name: name,
-                        phone: phone,
-                        debtEnabled: debtEnabled,
-                        isActive: true,
-                        createdAt: Timestamp.now(),
-                        updatedAt: Timestamp.now(),
-                        createdBy: createdBy,
-                        updatedBy: createdBy,
-                      ),
-                    );
-                  },
-            child: isSaving
-                ? const SizedBox.square(
-                    dimension: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Text('حفظ'),
-          ),
+        FilledButton(
+          onPressed: _saving ? null : _submit,
+          child: _saving
+              ? const SizedBox.square(
+                  dimension: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('حفظ'),
         ),
       ],
-    ),
-  );
-  debtEnabledController.dispose();
-  saving.dispose();
-  nameController.dispose();
-  phoneController.dispose();
-  return result;
+    );
+  }
 }
 
-Future<void> showAddCustomerDialog(
+/// Shows the add-customer dialog, then performs the Firestore write.
+///
+/// Returns `true` only when a customer was actually created, so the caller can
+/// decide whether a list refresh is warranted. Cancel returns `false` and
+/// performs no Firestore work at all.
+Future<bool> showAddCustomerDialog(
   BuildContext context,
   String storeId,
   String createdBy,
 ) async {
-  final result = await _showCustomerForm(context,
-      storeId: storeId, createdBy: createdBy);
-  if (result == null) return;
+  final draft = await _showCustomerForm(context, title: 'إضافة عميل');
+  if (draft == null) return false;
   try {
     await CustomerRepository().createCustomer(
       storeId: storeId,
-      name: result.name,
-      phone: result.phone,
-      debtEnabled: result.debtEnabled,
+      name: draft.name,
+      phone: draft.phone,
+      debtEnabled: draft.debtEnabled,
       createdBy: createdBy,
     );
-    if (!context.mounted) return;
+    if (!context.mounted) return true;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('تم إضافة العميل بنجاح')),
     );
+    return true;
   } on CustomerAlreadyExistsException {
-    if (!context.mounted) return;
+    if (!context.mounted) return false;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('اسم العميل مستخدم بالفعل')),
     );
+    return false;
   } catch (_) {
-    if (!context.mounted) return;
+    if (!context.mounted) return false;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('تعذر إضافة العميل')),
+      const SnackBar(
+        content: Text('تعذر إضافة العميل. تحقق من الاتصال وحاول مرة أخرى.'),
+      ),
     );
+    return false;
   }
 }
 
@@ -175,16 +211,22 @@ Future<void> showEditCustomerDialog(
 ) async {
   final repo = CustomerRepository();
   final customer = await repo.getCustomer(storeId, customerId);
-  final result = await _showCustomerForm(context,
-      existingCustomer: customer, storeId: storeId, createdBy: updatedBy);
-  if (result == null) return;
+  if (!context.mounted) return;
+  final draft = await _showCustomerForm(
+    context,
+    title: 'تعديل عميل',
+    initialName: customer.name,
+    initialPhone: customer.phone,
+    initialDebtEnabled: customer.debtEnabled,
+  );
+  if (draft == null) return;
   try {
     await repo.updateCustomer(
       storeId: storeId,
       customerId: customerId,
-      name: result.name,
-      phone: result.phone,
-      debtEnabled: result.debtEnabled,
+      name: draft.name,
+      phone: draft.phone,
+      debtEnabled: draft.debtEnabled,
       updatedBy: updatedBy,
     );
     if (!context.mounted) return;

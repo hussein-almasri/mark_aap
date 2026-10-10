@@ -266,18 +266,33 @@ class _CustomerManagementScreenState extends State<CustomerManagementScreen> {
     return Padding(
       padding: const EdgeInsets.all(16),
       child: FloatingActionButton.extended(
-        onPressed: _isSaving ? null : () => _showAddCustomerDialog(),
+        onPressed: _isSaving ? null : _showAddCustomerDialog,
         icon: const Icon(Icons.add),
         label: const Text('إضافة عميل'),
       ),
     );
   }
 
-  void _showAddCustomerDialog() {
-    showAddCustomerDialog(
-      context,
-      widget.user.storeId,
-      widget.user.uid,
-    ).then((_) => _loadCustomers());
+  Future<void> _showAddCustomerDialog() async {
+    // The FAB stays disabled for the whole create + reload window, so a
+    // second dialog cannot be opened on top of the first.
+    if (_isSaving) return;
+    setState(() => _isSaving = true);
+    try {
+      final created = await showAddCustomerDialog(
+        context,
+        widget.user.storeId,
+        widget.user.uid,
+      );
+      // Only refresh after an actual create. Cancelling must not blank the
+      // screen behind a full-screen spinner.
+      if (created && mounted) {
+        await _loadCustomers();
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isSaving = false);
+      }
+    }
   }
 }
