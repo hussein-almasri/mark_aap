@@ -1,4 +1,4 @@
-import '../../../core/utils/price_amount.dart';
+import 'package:mark_aap/core/utils/price_amount.dart';
 
 /// Pure validation helpers for the purchase-invoice form.
 ///

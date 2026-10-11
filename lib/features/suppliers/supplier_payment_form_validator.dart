@@ -1,5 +1,4 @@
-import '../../../core/utils/price_amount.dart';
-
+import 'package:mark_aap/core/utils/price_amount.dart';
 /// Pure validation helpers for the supplier-payment form.
 ///
 /// Deliberately free of Flutter and Firestore so the money rules can be unit
