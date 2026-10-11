@@ -4,6 +4,7 @@ import '../../../data/models/user_model.dart';
 import '../../debts/screens/debt_management_screen.dart';
 import '../../products/screens/product_list_screen.dart';
 import '../../purchases/screens/purchase_invoice_list_screen.dart';
+import '../../suppliers/screens/supplier_debt_list_screen.dart';
 
 class EmployeeDashboard extends StatelessWidget {
   const EmployeeDashboard({required this.user, super.key});
@@ -55,6 +56,21 @@ class EmployeeDashboard extends StatelessWidget {
             onTap: () => Navigator.of(context).push<void>(
               MaterialPageRoute(
                 builder: (_) => PurchaseInvoiceListScreen(user: user),
+              ),
+            ),
+          ),
+        ),
+        Card(
+          child: ListTile(
+            leading: const CircleAvatar(
+              child: Icon(Icons.account_balance_outlined),
+            ),
+            title: const Text('ديون ودفعات الموردين'),
+            subtitle: const Text('عرض ديون الموردين وتسجيل الدفعات'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push<void>(
+              MaterialPageRoute(
+                builder: (_) => SupplierDebtListScreen(user: user),
               ),
             ),
           ),

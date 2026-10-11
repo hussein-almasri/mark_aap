@@ -68,8 +68,8 @@ class SupplierPaymentRepository {
   /// Query shape: a single `where('companyId')` equality filter, which the
   /// automatic single-field index serves without any deployed composite index
   /// (`firestore.indexes.json` is intentionally empty). The `OPEN` + positive
-  /// remainder filtering happens here in Dart rather than via extra `where`
-  /// clauses that would require a composite index.
+  /// remainder filtering happens in [selectOpenWithBalance] (pure Dart) rather
+  /// than via extra `where` clauses that would require a composite index.
   ///
   /// Results are sorted by `createdAt` ascending, mirroring [listPayments].
   Future<List<SupplierDebtModel>> listOpenDebtsForCompany(
@@ -79,8 +79,21 @@ class SupplierPaymentRepository {
     final snapshot = await supplierDebts(storeId)
         .where('companyId', isEqualTo: companyId)
         .get();
-    final openWithBalance = snapshot.docs
-        .map(SupplierDebtModel.fromDocument)
+    return selectOpenWithBalance(
+      snapshot.docs.map(SupplierDebtModel.fromDocument).toList(),
+    );
+  }
+
+  /// Pure filter + sort over already-fetched debts.
+  ///
+  /// Keeps only [SupplierDebtStatus.open] debts with a strictly positive
+  /// remaining balance, then sorts them by `createdAt` ascending. Extracted so
+  /// the selection rule is unit-testable without touching Firestore, and so it
+  /// never mutates the balances it reads.
+  static List<SupplierDebtModel> selectOpenWithBalance(
+    List<SupplierDebtModel> debts,
+  ) {
+    final openWithBalance = debts
         .where(
           (debt) =>
               debt.status == SupplierDebtStatus.open &&
