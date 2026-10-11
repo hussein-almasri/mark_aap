@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import '../models/supplier_debt_model.dart';
 import '../models/supplier_payment_model.dart';
 
 class PaymentAllocationMismatchException implements Exception {
@@ -40,6 +41,54 @@ class SupplierPaymentRepository {
     final snapshot =
         await supplierPayments(storeId).orderBy('createdAt').get();
     return snapshot.docs.map(SupplierPaymentModel.fromDocument).toList();
+  }
+
+  /// Mints a fresh operation id locally (no network round-trip).
+  ///
+  /// Callers mint one id per *logical* payment so retrying the same submission
+  /// reuses the same id (idempotent) while a new submission gets a new id.
+  /// Mirrors `PurchaseInvoiceRepository.newOperationId`.
+  String newOperationId(String storeId) => operations(storeId).doc().id;
+
+  Future<SupplierDebtModel> getDebt(String storeId, String invoiceId) async {
+    final snapshot = await supplierDebts(storeId).doc(invoiceId).get();
+    if (!snapshot.exists) {
+      throw StateError('Supplier debt not found.');
+    }
+    return SupplierDebtModel.fromDocument(snapshot);
+  }
+
+  /// Lists the supplier debts of one company that still have a balance.
+  ///
+  /// Only debts with status [SupplierDebtStatus.open] **and** a strictly
+  /// positive `remainingAmountFils` are returned, so callers never offer a
+  /// fully-paid or cancelled invoice as a candidate for settlement. The
+  /// remaining balances on the stored documents are **not** modified.
+  ///
+  /// Query shape: a single `where('companyId')` equality filter, which the
+  /// automatic single-field index serves without any deployed composite index
+  /// (`firestore.indexes.json` is intentionally empty). The `OPEN` + positive
+  /// remainder filtering happens here in Dart rather than via extra `where`
+  /// clauses that would require a composite index.
+  ///
+  /// Results are sorted by `createdAt` ascending, mirroring [listPayments].
+  Future<List<SupplierDebtModel>> listOpenDebtsForCompany(
+    String storeId,
+    String companyId,
+  ) async {
+    final snapshot = await supplierDebts(storeId)
+        .where('companyId', isEqualTo: companyId)
+        .get();
+    final openWithBalance = snapshot.docs
+        .map(SupplierDebtModel.fromDocument)
+        .where(
+          (debt) =>
+              debt.status == SupplierDebtStatus.open &&
+              debt.remainingAmountFils > 0,
+        )
+        .toList();
+    openWithBalance.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    return openWithBalance;
   }
 
   /// Creates a supplier payment using the two-phase pattern the Firestore rules
