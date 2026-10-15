@@ -73,6 +73,10 @@ class _SupplierPaymentFormScreenState extends State<SupplierPaymentFormScreen> {
   bool _isLoadingDebts = true;
   String? _debtsError;
   bool _isSaving = false;
+
+  /// Whether the cross-field summary error may be shown. It stays hidden until
+  /// the first save attempt so an untouched form does not open with a red error.
+  bool _showErrors = false;
   SupplierPaymentSource _source = SupplierPaymentSource.shopCash;
 
   /// Minted once per logical payment and reused across retries, so a failed
@@ -248,7 +252,7 @@ class _SupplierPaymentFormScreenState extends State<SupplierPaymentFormScreen> {
     if (!_canSave) return;
     if (!_formKey.currentState!.validate()) return;
     if (_paymentError != null) {
-      _showMessage(_paymentError!);
+      setState(() => _showErrors = true);
       return;
     }
 
@@ -502,7 +506,7 @@ class _SupplierPaymentFormScreenState extends State<SupplierPaymentFormScreen> {
 
   Widget _buildSummary() {
     final amount = _amountFils;
-    final error = _paymentError;
+    final error = _showErrors ? _paymentError : null;
     final colorScheme = Theme.of(context).colorScheme;
     return Card(
       child: Padding(
