@@ -8,13 +8,16 @@ import '../../../data/models/supplier_debt_model.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/repositories/company_repository.dart';
 import '../../../data/repositories/supplier_payment_repository.dart';
+import 'supplier_payment_form_screen.dart';
+import 'supplier_payment_log_screen.dart';
 
 /// Lists a supplier's outstanding debts, one step before recording a payment.
 ///
 /// Two states in one screen: when no company is chosen it shows the store's
 /// active companies; picking one loads that company's debts that still have a
-/// balance (`listOpenDebtsForCompany`). It is read-only — recording a payment
-/// is a later phase, and there is deliberately no cancel action here.
+/// balance (`listOpenDebtsForCompany`). Selecting a company with debts exposes
+/// a FAB to record a payment, and the app bar links to the payment log. There
+/// is deliberately no cancel action here.
 class SupplierDebtListScreen extends StatefulWidget {
   const SupplierDebtListScreen({
     required this.user,
@@ -45,6 +48,7 @@ class _SupplierDebtListScreenState extends State<SupplierDebtListScreen> {
   List<SupplierDebtModel>? _debts;
   bool _isLoadingDebts = false;
   String? _debtsError;
+  bool _isOpeningForm = false;
 
   @override
   void initState() {
@@ -111,6 +115,41 @@ class _SupplierDebtListScreenState extends State<SupplierDebtListScreen> {
     });
   }
 
+  Future<void> _openCreateForm() async {
+    final company = _selectedCompany;
+    if (company == null || _isOpeningForm) return;
+    // Keep the entry point disabled for the whole create + reload window so a
+    // second form cannot be opened on top of the first.
+    setState(() => _isOpeningForm = true);
+    try {
+      final created = await Navigator.of(context).push<bool>(
+        MaterialPageRoute(
+          builder: (_) => SupplierPaymentFormScreen(
+            user: widget.user,
+            companyId: company.companyId,
+            companyName: company.name,
+            paymentRepository: widget.paymentRepository,
+          ),
+        ),
+      );
+      // Only refresh after an actual create; cancelling must not reload.
+      if (created == true && mounted) await _selectCompany(company);
+    } finally {
+      if (mounted) setState(() => _isOpeningForm = false);
+    }
+  }
+
+  void _openLog() {
+    Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => SupplierPaymentLogScreen(
+          user: widget.user,
+          repository: widget.paymentRepository,
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -124,8 +163,32 @@ class _SupplierDebtListScreenState extends State<SupplierDebtListScreen> {
                 icon: const Icon(Icons.arrow_forward),
                 onPressed: _clearSelection,
               ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.receipt_long_outlined),
+            tooltip: 'سجل الدفعات',
+            onPressed: _openLog,
+          ),
+        ],
       ),
+      floatingActionButton: _buildPaymentFab(),
       body: _buildBody(),
+    );
+  }
+
+  Widget? _buildPaymentFab() {
+    final debts = _debts;
+    if (_selectedCompany == null ||
+        _isLoadingDebts ||
+        _debtsError != null ||
+        debts == null ||
+        debts.isEmpty) {
+      return null;
+    }
+    return FloatingActionButton.extended(
+      onPressed: _isOpeningForm ? null : _openCreateForm,
+      icon: const Icon(Icons.add),
+      label: const Text('تسجيل دفعة'),
     );
   }
 
