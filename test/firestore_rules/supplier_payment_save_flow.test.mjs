@@ -114,8 +114,9 @@ async function phase2Transaction(db, {
   debtId = 'inv-1',
   allocationAmountFils = 40000,
   source = 'SHOP_CASH',
-  invoiceStatus = 'ACTIVE',
+  companyName = 'Example Company',
   createdBy = adminUid,
+  skipClientChecks = false,
 }) {
   const operationRef = doc(db, 'stores', storeId, 'operations', operationId);
   const paymentRef = doc(db, 'stores', storeId, 'supplierPayments', operationId);
@@ -131,18 +132,21 @@ async function phase2Transaction(db, {
       throw new Error(`Supplier debt not found for invoice ${debtId}.`);
     }
     const debt = debtSnapshot.data();
-    if (debt.status !== 'OPEN') {
-      throw new Error(`Supplier debt for invoice ${debtId} is not active.`);
-    }
-    if (debt.remainingAmountFils < allocationAmountFils) {
-      throw new Error(
-        `Allocation ${allocationAmountFils} exceeds remaining ${debt.remainingAmountFils}.`,
-      );
+    if (!skipClientChecks) {
+      // Mirrors the repository's own pre-check, which runs before any write.
+      if (debt.status !== 'OPEN') {
+        throw new Error(`Supplier debt for invoice ${debtId} is not active.`);
+      }
+      if (debt.remainingAmountFils < allocationAmountFils) {
+        throw new Error(
+          `Allocation ${allocationAmountFils} exceeds remaining ${debt.remainingAmountFils}.`,
+        );
+      }
     }
 
     tx.set(paymentRef, {
       companyId: 'company-1',
-      companyName: 'Example Company',
+      companyName,
       amountFils: allocationAmountFils,
       source,
       status: 'ACTIVE',
@@ -175,7 +179,6 @@ async function phase2Transaction(db, {
     }
     tx.update(operationRef, { status: 'COMPLETED' });
   });
-  void invoiceStatus;
 }
 
 test('gate read on a brand-new operation id is allowed (missing doc)', async () => {
@@ -333,4 +336,158 @@ test('a genuinely new operationId after an abandoned attempt leaves an orphan', 
   }));
   assert.equal(first.data().status, 'PROCESSING');
   assert.equal(second.data().status, 'COMPLETED');
+});
+
+test('phase 2 is denied when the supplier was renamed after the invoices', async () => {
+  // The app passes the CURRENT company name into the payment
+  // (supplier_debt_list_screen.dart passes company.name), while the debt and
+  // the invoice keep the name stored when the invoice was created. Rules
+  // require payment.companyName == debt.companyName (L719).
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(doc(db, 'stores', storeId, 'companies', 'company-1'), {
+      name: 'Renamed Company',
+      updatedAt: new Date(),
+    });
+  });
+
+  const db = testEnv.authenticatedContext(adminUid).firestore();
+  const operationRef = doc(db, 'stores', storeId, 'operations', 'pay-renamed');
+  const stages = [];
+  try {
+    await getDoc(doc(db, 'stores', storeId, 'supplierDebts', 'inv-1'));
+    stages.push({ stage: 'read-debt', ok: true });
+  } catch (error) {
+    stages.push({ stage: 'read-debt', ok: false, ...explain(error) });
+  }
+  try {
+    await setDoc(operationRef, operationDoc('pay-renamed'));
+    stages.push({ stage: 'phase1-create-operation', ok: true });
+  } catch (error) {
+    stages.push({ stage: 'phase1-create-operation', ok: false, ...explain(error) });
+  }
+  try {
+    await phase2Transaction(db, { operationId: 'pay-renamed', companyName: 'Renamed Company' });
+    stages.push({ stage: 'phase2-transaction', ok: true });
+  } catch (error) {
+    stages.push({ stage: 'phase2-transaction', ok: false, ...explain(error) });
+  }
+
+  console.log('T7 renamed-supplier stages:', JSON.stringify(stages, null, 2));
+  assert.equal(stages.find((stage) => stage.stage === 'read-debt').ok, true);
+  assert.equal(stages.find((stage) => stage.stage === 'phase1-create-operation').ok, true);
+  const phase2 = stages.find((stage) => stage.stage === 'phase2-transaction');
+  assert.equal(phase2.ok, false);
+  assert.equal(phase2.code, 'permission-denied');
+
+  // Nothing moved: the balance is untouched and the operation is left stuck.
+  const debt = await getDoc(doc(db, 'stores', storeId, 'supplierDebts', 'inv-1'));
+  const operation = await getDoc(operationRef);
+  console.log('T7 after failure:', JSON.stringify({
+    remainingAmountFils: debt.data().remainingAmountFils,
+    debtStatus: debt.data().status,
+    operationStatus: operation.data().status,
+  }));
+  assert.equal(debt.data().remainingAmountFils, 40000);
+  assert.equal(debt.data().status, 'OPEN');
+  assert.equal(operation.data().status, 'PROCESSING');
+});
+
+test('a diverged membership index is denied at phase 1, and blocks reads too', async () => {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    // stores/{store}/users/{uid}.isActive stays true (what auth_gate.dart reads
+    // for the ADMIN path), while the membership index says inactive (what
+    // isFinancialStoreMember also requires).
+    await setDoc(doc(db, 'users', adminUid, 'memberships', storeId), {
+      storeId,
+      role: 'ADMIN',
+      isActive: false,
+    });
+  });
+
+  const db = testEnv.authenticatedContext(adminUid).firestore();
+  const stages = [];
+  try {
+    await getDoc(doc(db, 'stores', storeId, 'supplierDebts', 'inv-1'));
+    stages.push({ stage: 'read-debt', ok: true });
+  } catch (error) {
+    stages.push({ stage: 'read-debt', ok: false, ...explain(error) });
+  }
+  try {
+    await setDoc(doc(db, 'stores', storeId, 'operations', 'pay-diverged'), operationDoc('pay-diverged'));
+    stages.push({ stage: 'phase1-create-operation', ok: true });
+  } catch (error) {
+    stages.push({ stage: 'phase1-create-operation', ok: false, ...explain(error) });
+  }
+
+  console.log('T8 diverged membership stages:', JSON.stringify(stages, null, 2));
+  const read = stages.find((stage) => stage.stage === 'read-debt');
+  const phase1 = stages.find((stage) => stage.stage === 'phase1-create-operation');
+  assert.equal(read.ok, false);
+  assert.equal(read.code, 'permission-denied');
+  assert.equal(phase1.ok, false);
+  assert.equal(phase1.code, 'permission-denied');
+});
+
+test('an allocation that no longer fits the balance is stopped twice over', async () => {
+  // Another device settled part of this debt, so 40000 no longer fits inside
+  // the remaining 10000.
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(doc(db, 'stores', storeId, 'supplierDebts', 'inv-1'), {
+      invoiceId: 'inv-1',
+      companyId: 'company-1',
+      companyName: 'Example Company',
+      originalAmountFils: 40000,
+      remainingAmountFils: 10000,
+      status: 'OPEN',
+      createdAt: new Date(),
+      createdBy: adminUid,
+      operationId: 'inv-op-1',
+      lastOperationId: 'inv-op-1',
+    });
+  });
+
+  const db = testEnv.authenticatedContext(adminUid).firestore();
+  const operationRef = doc(db, 'stores', storeId, 'operations', 'pay-short');
+  await setDoc(operationRef, operationDoc('pay-short'));
+
+  // 1. The client-side pre-check stops first, exactly like the repository's
+  //    ArgumentError, so the app never reaches the rules for this case.
+  let client;
+  try {
+    await phase2Transaction(db, { operationId: 'pay-short', allocationAmountFils: 40000 });
+    client = { ok: true };
+  } catch (error) {
+    client = { ok: false, code: error.code ?? null, message: error.message };
+  }
+  console.log('T9 client pre-check:', JSON.stringify(client));
+  assert.equal(client.ok, false);
+  assert.equal(client.code, null);
+
+  // 2. If the write is forced through, the rules reject it as well (L720-L722).
+  let rules;
+  try {
+    await phase2Transaction(db, {
+      operationId: 'pay-short',
+      allocationAmountFils: 40000,
+      skipClientChecks: true,
+    });
+    rules = { ok: true };
+  } catch (error) {
+    rules = { ok: false, code: error.code ?? null, name: error.name };
+  }
+  console.log('T9 rules rejection:', JSON.stringify(rules));
+  assert.equal(rules.ok, false);
+  assert.equal(rules.code, 'permission-denied');
+
+  // Nothing moved either way.
+  const debt = await getDoc(doc(db, 'stores', storeId, 'supplierDebts', 'inv-1'));
+  console.log('T9 after failure remaining:', JSON.stringify({
+    remainingAmountFils: debt.data().remainingAmountFils,
+    status: debt.data().status,
+  }));
+  assert.equal(debt.data().remainingAmountFils, 10000);
+  assert.equal(debt.data().status, 'OPEN');
 });

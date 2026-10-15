@@ -9,6 +9,58 @@ class PaymentAllocationMismatchException implements Exception {
   String toString() => 'PaymentAllocationMismatchException';
 }
 
+/// The step of the two-phase save that failed.
+///
+/// Tagging the stage keeps a rules rejection attributable: a failure while
+/// creating the `PROCESSING` operation means the writer was not accepted at
+/// all, while a failure inside the completion transaction means the writer was
+/// accepted but one of the documents it writes was refused.
+enum SupplierPaymentSaveStage {
+  /// Reading the existing operation for the idempotency gate.
+  idempotencyGate,
+
+  /// Writing the `PROCESSING` operation record (phase 1).
+  operationCreate,
+
+  /// The atomic payment + debts + withdrawal + `COMPLETED` update (phase 2).
+  paymentTransaction,
+}
+
+/// A phase-2 precondition the rules depend on that no longer holds.
+///
+/// Determined by re-reading the documents the rules read, so a rejection is
+/// attributed to the state that actually broke rather than guessed at.
+enum SupplierPaymentConflictReason {
+  debtMissing,
+  debtNotOpen,
+  allocationExceedsRemaining,
+  invoiceMissing,
+  invoiceNotActive,
+  companyIdMismatch,
+  companyNameMismatch,
+}
+
+/// Wraps the original failure with the stage it happened in.
+///
+/// [conflict] is only populated for [SupplierPaymentSaveStage.paymentTransaction]
+/// and only when the state could be re-read; `null` means no precise cause was
+/// established and the caller must not claim one.
+class SupplierPaymentStageException implements Exception {
+  const SupplierPaymentStageException({
+    required this.stage,
+    required this.cause,
+    this.conflict,
+  });
+
+  final SupplierPaymentSaveStage stage;
+  final Object cause;
+  final SupplierPaymentConflictReason? conflict;
+
+  @override
+  String toString() =>
+      'SupplierPaymentStageException(${stage.name}, $cause, $conflict)';
+}
+
 class SupplierPaymentRepository {
   SupplierPaymentRepository({FirebaseFirestore? firestore})
     : _firestore = firestore ?? FirebaseFirestore.instance;
@@ -17,20 +69,34 @@ class SupplierPaymentRepository {
 
   // Collection references - public for internal test access
   CollectionReference<Map<String, dynamic>> supplierPayments(String storeId) =>
-      _firestore.collection('stores').doc(storeId).collection('supplierPayments');
+      _firestore
+          .collection('stores')
+          .doc(storeId)
+          .collection('supplierPayments');
 
   CollectionReference<Map<String, dynamic>> supplierDebts(String storeId) =>
       _firestore.collection('stores').doc(storeId).collection('supplierDebts');
 
   CollectionReference<Map<String, dynamic>> cashWithdrawals(String storeId) =>
-      _firestore.collection('stores').doc(storeId).collection('cashWithdrawals');
+      _firestore
+          .collection('stores')
+          .doc(storeId)
+          .collection('cashWithdrawals');
 
   CollectionReference<Map<String, dynamic>> operations(String storeId) =>
       _firestore.collection('stores').doc(storeId).collection('operations');
 
-  Future<SupplierPaymentModel> getPayment(String storeId, String paymentId) async {
-    final snapshot =
-        await supplierPayments(storeId).doc(paymentId).get();
+  CollectionReference<Map<String, dynamic>> purchaseInvoices(String storeId) =>
+      _firestore
+          .collection('stores')
+          .doc(storeId)
+          .collection('purchaseInvoices');
+
+  Future<SupplierPaymentModel> getPayment(
+    String storeId,
+    String paymentId,
+  ) async {
+    final snapshot = await supplierPayments(storeId).doc(paymentId).get();
     if (!snapshot.exists) {
       throw StateError('Supplier payment not found.');
     }
@@ -38,8 +104,7 @@ class SupplierPaymentRepository {
   }
 
   Future<List<SupplierPaymentModel>> listPayments(String storeId) async {
-    final snapshot =
-        await supplierPayments(storeId).orderBy('createdAt').get();
+    final snapshot = await supplierPayments(storeId).orderBy('createdAt').get();
     return snapshot.docs.map(SupplierPaymentModel.fromDocument).toList();
   }
 
@@ -76,9 +141,9 @@ class SupplierPaymentRepository {
     String storeId,
     String companyId,
   ) async {
-    final snapshot = await supplierDebts(storeId)
-        .where('companyId', isEqualTo: companyId)
-        .get();
+    final snapshot = await supplierDebts(
+      storeId,
+    ).where('companyId', isEqualTo: companyId).get();
     return selectOpenWithBalance(
       snapshot.docs.map(SupplierDebtModel.fromDocument).toList(),
     );
@@ -147,7 +212,11 @@ class SupplierPaymentRepository {
   }) async {
     // Validate allocationCount range
     if (allocationCount < 1 || allocationCount > 5) {
-      throw ArgumentError.value(allocationCount, 'allocationCount', 'Must be 1..5.');
+      throw ArgumentError.value(
+        allocationCount,
+        'allocationCount',
+        'Must be 1..5.',
+      );
     }
 
     // Collect all allocation data into arrays for validation
@@ -174,15 +243,16 @@ class SupplierPaymentRepository {
       if (isUsed) {
         if (id == null || id.isEmpty) {
           throw ArgumentError(
-              'Each counted allocation slot must have an invoice ID.');
+            'Each counted allocation slot must have an invoice ID.',
+          );
         }
         if (amount == null || amount <= 0) {
           throw ArgumentError(
-              'Each counted allocation slot must have a positive amount.');
+            'Each counted allocation slot must have a positive amount.',
+          );
         }
       } else if (id != null || amount != null) {
-        throw ArgumentError(
-            'Slots beyond allocationCount must be absent.');
+        throw ArgumentError('Slots beyond allocationCount must be absent.');
       }
     }
 
@@ -192,8 +262,7 @@ class SupplierPaymentRepository {
       allocatedTotal += allocationAmounts[i] ?? 0;
     }
     if (allocatedTotal != amountFils) {
-      throw ArgumentError(
-          'Allocation total must equal payment amountFils.');
+      throw ArgumentError('Allocation total must equal payment amountFils.');
     }
 
     // Validate invoice IDs are unique
@@ -205,14 +274,34 @@ class SupplierPaymentRepository {
       }
     }
     if (usedIds.length != allocationCount) {
-      throw ArgumentError('A supplier payment cannot allocate an invoice twice.');
+      throw ArgumentError(
+        'A supplier payment cannot allocate an invoice twice.',
+      );
     }
 
     final operationRef = operations(storeId).doc(operationId);
     final paymentRef = supplierPayments(storeId).doc(operationId);
+    // Non-null views of the used slots, needed to re-read the state if phase 2
+    // is refused.
+    final usedDebtIds = [
+      for (var index = 0; index < allocationCount; index++)
+        allocationInvoiceIds[index]!,
+    ];
+    final usedAmounts = [
+      for (var index = 0; index < allocationCount; index++)
+        allocationAmounts[index]!,
+    ];
 
     // ----- Idempotency gate (outside any transaction) -----
-    final existingOperation = await operationRef.get();
+    final DocumentSnapshot<Map<String, dynamic>> existingOperation;
+    try {
+      existingOperation = await operationRef.get();
+    } catch (error) {
+      throw SupplierPaymentStageException(
+        stage: SupplierPaymentSaveStage.idempotencyGate,
+        cause: error,
+      );
+    }
     if (existingOperation.exists) {
       final status = existingOperation.data()?['status'];
       if (status == 'COMPLETED') {
@@ -223,135 +312,235 @@ class SupplierPaymentRepository {
       // operationId, so no duplicate documents).
     } else {
       // ----- Phase 1: create the operation record as PROCESSING -----
-      await operationRef.set({
-        'operationId': operationId,
-        'type': 'CREATE_SUPPLIER_PAYMENT',
-        'createdBy': createdBy,
-        'createdAt': FieldValue.serverTimestamp(),
-        'status': 'PROCESSING',
-        'retryCount': 0,
-        'paymentId': operationId,
-      });
+      try {
+        await operationRef.set({
+          'operationId': operationId,
+          'type': 'CREATE_SUPPLIER_PAYMENT',
+          'createdBy': createdBy,
+          'createdAt': FieldValue.serverTimestamp(),
+          'status': 'PROCESSING',
+          'retryCount': 0,
+          'paymentId': operationId,
+        });
+      } catch (error) {
+        throw SupplierPaymentStageException(
+          stage: SupplierPaymentSaveStage.operationCreate,
+          cause: error,
+        );
+      }
     }
 
     // ----- Phase 2: atomic payment + debts + withdrawal? + operation→COMPLETED -----
-    await _firestore.runTransaction((Transaction transaction) async {
-      // Guard against a concurrent completion racing this retry.
-      final opSnapshot = await transaction.get(operationRef);
-      if (!opSnapshot.exists) {
-        throw const PaymentAllocationMismatchException();
-      }
-      final opStatus = opSnapshot.data()?['status'];
-      if (opStatus == 'COMPLETED') {
-        throw const PaymentAllocationMismatchException();
-      }
-
-      // 1. Read all referenced supplier debts
-      final List<String> debtIds = [];
-      for (var i = 0; i < allocationCount; i++) {
-        debtIds.add(allocationInvoiceIds[i]!);
-      }
-
-      final List<DocumentSnapshot> debtDocs = [];
-      for (final debtId in debtIds) {
-        final debtRef = supplierDebts(storeId).doc(debtId);
-        final snapshot = await transaction.get(debtRef);
-        if (!snapshot.exists) {
-          throw ArgumentError(
-              'Supplier debt not found for invoice $debtId.');
+    try {
+      await _firestore.runTransaction((Transaction transaction) async {
+        // Guard against a concurrent completion racing this retry.
+        final opSnapshot = await transaction.get(operationRef);
+        if (!opSnapshot.exists) {
+          throw const PaymentAllocationMismatchException();
         }
-        debtDocs.add(snapshot);
-      }
-
-      // 2. Validate each debt: active/open, remaining >= allocation amount
-      for (int i = 0; i < allocationCount; i++) {
-        final debtSnapshot = debtDocs[i];
-        final debtData = debtSnapshot.data() as Map<String, dynamic>;
-        final invoiceId = allocationInvoiceIds[i]!;
-        final allocationAmount = allocationAmounts[i]!;
-
-        final debtStatus = debtData['status'] as String;
-        if (debtStatus != 'OPEN') {
-          throw ArgumentError(
-              'Supplier debt for invoice $invoiceId is not active (status: $debtStatus).');
+        final opStatus = opSnapshot.data()?['status'];
+        if (opStatus == 'COMPLETED') {
+          throw const PaymentAllocationMismatchException();
         }
 
-        final remaining = debtData['remainingAmountFils'] as int;
-        if (remaining < allocationAmount) {
-          throw ArgumentError(
-              'Allocation amount $allocationAmount exceeds remaining debt $remaining for invoice $invoiceId.');
+        // 1. Read all referenced supplier debts
+        final List<String> debtIds = [];
+        for (var i = 0; i < allocationCount; i++) {
+          debtIds.add(allocationInvoiceIds[i]!);
         }
-      }
 
-      // 3. Create supplier payment document
-      transaction.set(paymentRef, {
-        'companyId': companyId,
-        'companyName': companyName,
-        'amountFils': amountFils,
-        'source': source.value,
-        'status': 'ACTIVE',
-        'allocationCount': allocationCount,
-        'allocation1InvoiceId': allocation1InvoiceId,
-        'allocation1AmountFils': allocation1AmountFils,
-        if (allocationCount > 1)
-          'allocation2InvoiceId': allocation2InvoiceId,
-        if (allocationCount > 1)
-          'allocation2AmountFils': allocation2AmountFils,
-        if (allocationCount > 2)
-          'allocation3InvoiceId': allocation3InvoiceId,
-        if (allocationCount > 2)
-          'allocation3AmountFils': allocation3AmountFils,
-        if (allocationCount > 3)
-          'allocation4InvoiceId': allocation4InvoiceId,
-        if (allocationCount > 3)
-          'allocation4AmountFils': allocation4AmountFils,
-        if (allocationCount > 4)
-          'allocation5InvoiceId': allocation5InvoiceId,
-        if (allocationCount > 4)
-          'allocation5AmountFils': allocation5AmountFils,
-        if (notes != null) 'notes': notes,
-        'createdAt': FieldValue.serverTimestamp(),
-        'createdBy': createdBy,
-        'operationId': operationId,
-      });
+        final List<DocumentSnapshot> debtDocs = [];
+        for (final debtId in debtIds) {
+          final debtRef = supplierDebts(storeId).doc(debtId);
+          final snapshot = await transaction.get(debtRef);
+          if (!snapshot.exists) {
+            throw ArgumentError('Supplier debt not found for invoice $debtId.');
+          }
+          debtDocs.add(snapshot);
+        }
 
-      // 4. Decrease each allocated debt by the exact allocation amount
-      for (int i = 0; i < allocationCount; i++) {
-        final debtSnapshot = debtDocs[i];
-        final debtRef = supplierDebts(storeId).doc(allocationInvoiceIds[i]!);
-        final debtMap = debtSnapshot.data() as Map<String, dynamic>;
-        final oldRemaining = debtMap['remainingAmountFils'] as int;
-        final newRemaining = oldRemaining - allocationAmounts[i]!;
+        // 2. Validate each debt: active/open, remaining >= allocation amount
+        for (int i = 0; i < allocationCount; i++) {
+          final debtSnapshot = debtDocs[i];
+          final debtData = debtSnapshot.data() as Map<String, dynamic>;
+          final invoiceId = allocationInvoiceIds[i]!;
+          final allocationAmount = allocationAmounts[i]!;
 
-        transaction.update(debtRef, {
-          'remainingAmountFils': newRemaining,
-          'lastOperationId': operationId,
-          if (newRemaining == 0) 'status': 'PAID',
-        });
-      }
+          final debtStatus = debtData['status'] as String;
+          if (debtStatus != 'OPEN') {
+            throw ArgumentError(
+              'Supplier debt for invoice $invoiceId is not active (status: $debtStatus).',
+            );
+          }
 
-      // 5. Automatic cash withdrawal when source == SHOP_CASH. Keys must be
-      //    EXACTLY [amountFils, type, supplierPaymentId, createdAt, createdBy,
-      //    status] per validSupplierPaymentWithdrawalCreate. No `source` field.
-      if (source.value == 'SHOP_CASH') {
-        final withdrawalRef =
-            cashWithdrawals(storeId).doc('supplierPayment_$operationId');
-        transaction.set(withdrawalRef, {
+          final remaining = debtData['remainingAmountFils'] as int;
+          if (remaining < allocationAmount) {
+            throw ArgumentError(
+              'Allocation amount $allocationAmount exceeds remaining debt $remaining for invoice $invoiceId.',
+            );
+          }
+        }
+
+        // 3. Create supplier payment document
+        transaction.set(paymentRef, {
+          'companyId': companyId,
+          'companyName': companyName,
           'amountFils': amountFils,
-          'type': 'PURCHASE_INVOICE',
-          'supplierPaymentId': operationId,
+          'source': source.value,
+          'status': 'ACTIVE',
+          'allocationCount': allocationCount,
+          'allocation1InvoiceId': allocation1InvoiceId,
+          'allocation1AmountFils': allocation1AmountFils,
+          if (allocationCount > 1) 'allocation2InvoiceId': allocation2InvoiceId,
+          if (allocationCount > 1)
+            'allocation2AmountFils': allocation2AmountFils,
+          if (allocationCount > 2) 'allocation3InvoiceId': allocation3InvoiceId,
+          if (allocationCount > 2)
+            'allocation3AmountFils': allocation3AmountFils,
+          if (allocationCount > 3) 'allocation4InvoiceId': allocation4InvoiceId,
+          if (allocationCount > 3)
+            'allocation4AmountFils': allocation4AmountFils,
+          if (allocationCount > 4) 'allocation5InvoiceId': allocation5InvoiceId,
+          if (allocationCount > 4)
+            'allocation5AmountFils': allocation5AmountFils,
+          'notes': ?notes,
           'createdAt': FieldValue.serverTimestamp(),
           'createdBy': createdBy,
-          'status': 'ACTIVE',
+          'operationId': operationId,
         });
-      }
 
-      // 6. Flip the operation to COMPLETED. Rules only allow the `status` field
-      //    to change, and only from PROCESSING.
-      transaction.update(operationRef, {'status': 'COMPLETED'});
-    });
+        // 4. Decrease each allocated debt by the exact allocation amount
+        for (int i = 0; i < allocationCount; i++) {
+          final debtSnapshot = debtDocs[i];
+          final debtRef = supplierDebts(storeId).doc(allocationInvoiceIds[i]!);
+          final debtMap = debtSnapshot.data() as Map<String, dynamic>;
+          final oldRemaining = debtMap['remainingAmountFils'] as int;
+          final newRemaining = oldRemaining - allocationAmounts[i]!;
+
+          transaction.update(debtRef, {
+            'remainingAmountFils': newRemaining,
+            'lastOperationId': operationId,
+            if (newRemaining == 0) 'status': 'PAID',
+          });
+        }
+
+        // 5. Automatic cash withdrawal when source == SHOP_CASH. Keys must be
+        //    EXACTLY [amountFils, type, supplierPaymentId, createdAt, createdBy,
+        //    status] per validSupplierPaymentWithdrawalCreate. No `source` field.
+        if (source.value == 'SHOP_CASH') {
+          final withdrawalRef = cashWithdrawals(
+            storeId,
+          ).doc('supplierPayment_$operationId');
+          transaction.set(withdrawalRef, {
+            'amountFils': amountFils,
+            'type': 'PURCHASE_INVOICE',
+            'supplierPaymentId': operationId,
+            'createdAt': FieldValue.serverTimestamp(),
+            'createdBy': createdBy,
+            'status': 'ACTIVE',
+          });
+        }
+
+        // 6. Flip the operation to COMPLETED. Rules only allow the `status` field
+        //    to change, and only from PROCESSING.
+        transaction.update(operationRef, {'status': 'COMPLETED'});
+      });
+    } on PaymentAllocationMismatchException {
+      rethrow;
+    } catch (error) {
+      // The rules just refused something this transaction writes. Re-read the
+      // documents they read so the caller is told which precondition broke
+      // instead of being handed a guess.
+      throw SupplierPaymentStageException(
+        stage: SupplierPaymentSaveStage.paymentTransaction,
+        cause: error,
+        conflict: await _diagnoseConflict(
+          storeId: storeId,
+          companyId: companyId,
+          companyName: companyName,
+          allocationInvoiceIds: usedDebtIds,
+          allocationAmounts: usedAmounts,
+        ),
+      );
+    }
 
     // ----- Return the payment ID -----
     return operationId;
+  }
+
+  /// Re-reads the phase-2 documents and returns the first precondition that no
+  /// longer holds, or `null` when every precondition still holds.
+  ///
+  /// `null` means the rejection came from somewhere this probe cannot see (for
+  /// example the withdrawal or the operation update), so no precise cause may
+  /// be claimed. A failed re-read also yields `null` rather than a guess.
+  Future<SupplierPaymentConflictReason?> _diagnoseConflict({
+    required String storeId,
+    required String companyId,
+    required String companyName,
+    required List<String> allocationInvoiceIds,
+    required List<int> allocationAmounts,
+  }) async {
+    try {
+      for (var index = 0; index < allocationInvoiceIds.length; index++) {
+        final invoiceId = allocationInvoiceIds[index];
+        final debtSnapshot = await supplierDebts(storeId).doc(invoiceId).get();
+        if (!debtSnapshot.exists) {
+          return SupplierPaymentConflictReason.debtMissing;
+        }
+        final invoiceSnapshot = await purchaseInvoices(
+          storeId,
+        ).doc(invoiceId).get();
+        if (!invoiceSnapshot.exists) {
+          return SupplierPaymentConflictReason.invoiceMissing;
+        }
+        final reason = classifyAllocationConflict(
+          companyId: companyId,
+          companyName: companyName,
+          debt: debtSnapshot.data()!,
+          invoice: invoiceSnapshot.data()!,
+          allocationAmountFils: allocationAmounts[index],
+        );
+        if (reason != null) return reason;
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Pure per-allocation check of the preconditions phase 2 depends on.
+  ///
+  /// Mirrors `debtPaymentSlotMatches` in `firestore.rules`: the debt must still
+  /// be `OPEN`, the allocation must still fit in the remaining balance, the
+  /// purchase invoice must still exist and be `ACTIVE`, and the company id and
+  /// name stored on the debt (and the invoice) must match the company the form
+  /// is paying. Extracted so each conflict is testable on its own.
+  static SupplierPaymentConflictReason? classifyAllocationConflict({
+    required String companyId,
+    required String companyName,
+    required Map<String, dynamic> debt,
+    required Map<String, dynamic> invoice,
+    required int allocationAmountFils,
+  }) {
+    if (debt['status'] != 'OPEN') {
+      return SupplierPaymentConflictReason.debtNotOpen;
+    }
+    final remaining = debt['remainingAmountFils'];
+    if (remaining is! int || remaining < allocationAmountFils) {
+      return SupplierPaymentConflictReason.allocationExceedsRemaining;
+    }
+    if (invoice['status'] != 'ACTIVE') {
+      return SupplierPaymentConflictReason.invoiceNotActive;
+    }
+    if (invoice['companyId'] != debt['companyId'] ||
+        debt['companyId'] != companyId) {
+      return SupplierPaymentConflictReason.companyIdMismatch;
+    }
+    if (invoice['companyName'] != debt['companyName'] ||
+        debt['companyName'] != companyName) {
+      return SupplierPaymentConflictReason.companyNameMismatch;
+    }
+    return null;
   }
 }

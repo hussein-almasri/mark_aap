@@ -31,6 +31,10 @@ class _FakePaymentRepository implements SupplierPaymentRepository {
       throw UnimplementedError();
 
   @override
+  CollectionReference<Map<String, dynamic>> purchaseInvoices(String storeId) =>
+      throw UnimplementedError();
+
+  @override
   String newOperationId(String storeId) => 'op-1';
 
   @override

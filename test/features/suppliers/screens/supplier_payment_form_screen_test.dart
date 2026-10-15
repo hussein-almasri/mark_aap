@@ -44,11 +44,17 @@ class _FakePaymentRepository implements SupplierPaymentRepository {
   int newIdCalls = 0;
   final createCalls = <_CreatePaymentCall>[];
   Object? createError;
+  SupplierPaymentSaveStage createStage = SupplierPaymentSaveStage.paymentTransaction;
+  SupplierPaymentConflictReason? createConflict;
   Completer<void>? createGate;
   bool throwAlreadyExists = false;
 
   @override
   CollectionReference<Map<String, dynamic>> supplierPayments(String storeId) =>
+      throw UnimplementedError();
+
+  @override
+  CollectionReference<Map<String, dynamic>> purchaseInvoices(String storeId) =>
       throw UnimplementedError();
 
   @override
@@ -145,7 +151,11 @@ class _FakePaymentRepository implements SupplierPaymentRepository {
     if (throwAlreadyExists) throw const PaymentAllocationMismatchException();
     if (createError case final error?) {
       createError = null;
-      throw error;
+      throw SupplierPaymentStageException(
+        stage: createStage,
+        cause: error,
+        conflict: createConflict,
+      );
     }
     return operationId;
   }
@@ -685,7 +695,10 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(
-      find.text('تعذر حفظ الدفعة. تحقق من الاتصال وحاول مرة أخرى.'),
+      find.text(
+        'تعذر حفظ الدفعة. تحقق من الاتصال وحاول مرة أخرى. '
+        '(رمز التشخيص: SP-TXN-unavailable)',
+      ),
       findsOneWidget,
     );
     expect(find.text('حفظ الدفعة'), findsOneWidget);
@@ -722,7 +735,8 @@ void main() {
 
     expect(
       find.text(
-        'لا تملك صلاحية حفظ دفعات الموردين في هذا المتجر. راجع إدارة المتجر.',
+        'لا تملك صلاحية حفظ دفعات الموردين في هذا المتجر. راجع إدارة المتجر. '
+        '(رمز التشخيص: SP-TXN-permission-denied)',
       ),
       findsOneWidget,
     );
@@ -751,7 +765,9 @@ void main() {
 
     expect(
       find.text(
-        'تغيّرت بيانات الفاتورة أثناء الحفظ. أعد تحميل قائمة الديون ثم أعد المحاولة.',
+        'تغيّرت بيانات الفاتورة أثناء الحفظ. '
+        'أعد تحميل قائمة الديون ثم أعد المحاولة. '
+        '(رمز التشخيص: SP-TXN-ArgumentError)',
       ),
       findsOneWidget,
     );
@@ -759,6 +775,122 @@ void main() {
       find.text('تعذر حفظ الدفعة. تحقق من الاتصال وحاول مرة أخرى.'),
       findsNothing,
     );
+  });
+
+  testWidgets('reports a renamed supplier only when the names really differ', (
+    tester,
+  ) async {
+    final payments = _FakePaymentRepository(debts: [
+      _debt(invoiceId: 'inv-1', remainingAmountFils: 40000),
+    ])
+      // Phase 2 was refused and the re-read showed the company name stored on
+      // the debt no longer matches the current supplier name.
+      ..createError = FirebaseException(
+        plugin: 'cloud_firestore',
+        code: 'permission-denied',
+      )
+      ..createConflict = SupplierPaymentConflictReason.companyNameMismatch;
+    await _pump(tester, payments: payments);
+
+    await _fill(tester, amount: '40.00', allocations: {0: '40.00'});
+    await _tapSave(tester);
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text(
+        'بيانات المورد الحالي لا تطابق الفواتير المسجّلة لها. '
+        'لا يمكن تسجيل الدفعة حتى تتطابق البيانات؛ راجع إدارة المتجر.',
+      ),
+      findsOneWidget,
+    );
+    // A real conflict must not be reported as a permissions problem.
+    expect(find.textContaining('لا تملك صلاحية'), findsNothing);
+    expect(find.textContaining('تعذر حفظ الدفعة'), findsNothing);
+  });
+
+  testWidgets('reports a cancelled invoice instead of a permissions problem', (
+    tester,
+  ) async {
+    final payments = _FakePaymentRepository(debts: [
+      _debt(invoiceId: 'inv-1', remainingAmountFils: 40000),
+    ])
+      ..createError = FirebaseException(
+        plugin: 'cloud_firestore',
+        code: 'permission-denied',
+      )
+      ..createConflict = SupplierPaymentConflictReason.invoiceNotActive;
+    await _pump(tester, payments: payments);
+
+    await _fill(tester, amount: '40.00', allocations: {0: '40.00'});
+    await _tapSave(tester);
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text(
+        'أحد الفواتير المختارة أصبح ملغى. '
+        'أعد تحميل قائمة الديون ثم أعد المحاولة.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.textContaining('لا تملك صلاحية'), findsNothing);
+    expect(find.textContaining('لا تطابق الفواتير'), findsNothing);
+  });
+
+  testWidgets('reports a balance conflict instead of a permissions problem', (
+    tester,
+  ) async {
+    final payments = _FakePaymentRepository(debts: [
+      _debt(invoiceId: 'inv-1', remainingAmountFils: 40000),
+    ])
+      ..createError = FirebaseException(
+        plugin: 'cloud_firestore',
+        code: 'permission-denied',
+      )
+      ..createConflict = SupplierPaymentConflictReason.allocationExceedsRemaining;
+    await _pump(tester, payments: payments);
+
+    await _fill(tester, amount: '40.00', allocations: {0: '40.00'});
+    await _tapSave(tester);
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text(
+        'المبلغ المخصّص يتجاوز الرصيد المتبقي للفاتورة. '
+        'أعد تحميل قائمة الديون ثم أعد المحاولة.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.textContaining('لا تملك صلاحية'), findsNothing);
+    expect(find.textContaining('لا تطابق الفواتير'), findsNothing);
+  });
+
+  testWidgets('keeps an honest general message when no cause is established', (
+    tester,
+  ) async {
+    final payments = _FakePaymentRepository(debts: [
+      _debt(invoiceId: 'inv-1', remainingAmountFils: 40000),
+    ])
+      // Phase 2 refused, but every re-read precondition still holds, so no
+      // precise cause may be claimed.
+      ..createError = FirebaseException(
+        plugin: 'cloud_firestore',
+        code: 'permission-denied',
+      );
+    await _pump(tester, payments: payments);
+
+    await _fill(tester, amount: '40.00', allocations: {0: '40.00'});
+    await _tapSave(tester);
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text(
+        'لا تملك صلاحية حفظ دفعات الموردين في هذا المتجر. راجع إدارة المتجر. '
+        '(رمز التشخيص: SP-TXN-permission-denied)',
+      ),
+      findsOneWidget,
+    );
+    expect(find.textContaining('لا تطابق الفواتير'), findsNothing);
+    expect(find.textContaining('أصبح ملغى'), findsNothing);
   });
 
   testWidgets('shows the already-exists message when the payment is a duplicate', (
