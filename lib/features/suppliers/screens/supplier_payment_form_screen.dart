@@ -8,6 +8,7 @@ import '../../../data/models/supplier_payment_model.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/repositories/purchase_invoice_repository.dart';
 import '../../../data/repositories/supplier_payment_repository.dart';
+import '../supplier_payment_error_message.dart';
 import '../supplier_payment_form_validator.dart';
 
 /// Full-screen form for recording a supplier payment against open debts.
@@ -320,8 +321,13 @@ class _SupplierPaymentFormScreenState extends State<SupplierPaymentFormScreen> {
       Navigator.of(context).pop(true);
     } on PaymentAllocationMismatchException {
       _showMessage('تم تسجيل هذه الدفعة مسبقاً؛ لم تُنشأ دفعة جديدة.');
-    } catch (_) {
-      _showMessage('تعذر حفظ الدفعة. تحقق من الاتصال وحاول مرة أخرى.');
+    } catch (error) {
+      // Keep the technical detail for diagnostics. A rules rejection or a
+      // stale-debt conflict must never be reported as a connectivity problem.
+      debugPrint(
+        'supplier payment save failed: ${supplierPaymentErrorDiagnostics(error)}',
+      );
+      _showMessage(supplierPaymentErrorMessage(error));
     } finally {
       if (!succeeded && mounted) setState(() => _isSaving = false);
     }
@@ -385,7 +391,7 @@ class _SupplierPaymentFormScreenState extends State<SupplierPaymentFormScreen> {
           controller: _amountController,
           keyboardType: const TextInputType.numberWithOptions(decimal: true),
           decoration: const InputDecoration(
-            labelText: 'مبلغ الدفعة (د.أ)',
+            labelText: 'إجمالي مبلغ الدفعة (د.أ)',
             hintText: 'مثال: 125.50',
             border: OutlineInputBorder(),
             suffixText: 'د.أ',
@@ -481,7 +487,7 @@ class _SupplierPaymentFormScreenState extends State<SupplierPaymentFormScreen> {
                   decimal: true,
                 ),
                 decoration: const InputDecoration(
-                  labelText: 'مبلغ التخصيص (د.أ)',
+                  labelText: 'المبلغ المسدّد لهذه الفاتورة (د.أ)',
                   hintText: '0.00',
                   border: OutlineInputBorder(),
                   suffixText: 'د.أ',
@@ -514,12 +520,17 @@ class _SupplierPaymentFormScreenState extends State<SupplierPaymentFormScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _summaryRow('مبلغ الدفعة', _formatFils(amount)),
-            _summaryRow('مجموع المخصص', _formatFils(_allocatedTotal)),
+            _summaryRow('إجمالي مبلغ الدفعة', _formatFils(amount)),
+            _summaryRow('إجمالي المسدّد للفواتير', _formatFils(_allocatedTotal)),
             _summaryRow(
-              'المتبقي',
+              'المتبقي من الدفعة',
               _formatFils(amount == null ? null : amount - _allocatedTotal),
               bold: true,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'يُخصم «المسدّد للفواتير» من كل فاتورة على حدة، حسب المبلغ المسدّد لها.',
+              style: Theme.of(context).textTheme.bodySmall,
             ),
             if (error != null) ...[
               const SizedBox(height: 8),

@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart'
-    show CollectionReference, Timestamp;
+    show CollectionReference, FirebaseException, Timestamp;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:intl/intl.dart';
@@ -330,7 +330,7 @@ Future<void> _fill(
 }) async {
   // Enter the payment amount first, while the field is at the top of the form.
   await tester.enterText(
-    find.widgetWithText(TextFormField, 'مبلغ الدفعة (د.أ)'),
+    find.widgetWithText(TextFormField, 'إجمالي مبلغ الدفعة (د.أ)'),
     amount,
   );
   await tester.pump();
@@ -372,9 +372,9 @@ void main() {
     expect(find.text('كاش الصندوق'), findsOneWidget);
     expect(find.text('كاش خارج الصندوق'), findsOneWidget);
     // Selecting exposes the allocation field for that invoice only.
-    expect(find.text('مبلغ التخصيص (د.أ)'), findsNothing);
+    expect(find.text('المبلغ المسدّد لهذه الفاتورة (د.أ)'), findsNothing);
     await _selectAt(tester, 0);
-    expect(find.text('مبلغ التخصيص (د.أ)'), findsOneWidget);
+    expect(find.text('المبلغ المسدّد لهذه الفاتورة (د.أ)'), findsOneWidget);
   });
 
   testWidgets('shows the supplier invoice number when it exists', (
@@ -496,11 +496,19 @@ void main() {
       allocations: {0: '40.00', 1: '25.00'},
     );
 
-    expect(find.text('مبلغ الدفعة'), findsOneWidget);
+    // The total payment amount is distinct from the per-invoice allocated
+    // amount, and the caption spells out how the two relate.
+    expect(find.text('إجمالي مبلغ الدفعة'), findsOneWidget);
     expect(find.text('65.00 د.أ'), findsWidgets);
-    expect(find.text('مجموع المخصص'), findsOneWidget);
-    expect(find.text('المتبقي'), findsOneWidget);
+    expect(find.text('إجمالي المسدّد للفواتير'), findsOneWidget);
+    expect(find.text('المتبقي من الدفعة'), findsOneWidget);
     expect(find.text('0.00 د.أ'), findsOneWidget);
+    expect(
+      find.text(
+        'يُخصم «المسدّد للفواتير» من كل فاتورة على حدة، حسب المبلغ المسدّد لها.',
+      ),
+      findsOneWidget,
+    );
   });
 
   testWidgets('blocks save when allocations do not sum to the amount', (
@@ -545,7 +553,7 @@ void main() {
     await _pump(tester, payments: payments);
 
     await tester.enterText(
-      find.widgetWithText(TextFormField, 'مبلغ الدفعة (د.أ)'),
+      find.widgetWithText(TextFormField, 'إجمالي مبلغ الدفعة (د.أ)'),
       '40.00',
     );
     await tester.pump();
@@ -663,7 +671,13 @@ void main() {
     final payments = _FakePaymentRepository(debts: [
       _debt(invoiceId: 'inv-1', remainingAmountFils: 40000),
     ])
-      ..createError = StateError('temporary');
+      // A genuinely transient failure, which is the only case that may mention
+      // the connection.
+      ..createError = FirebaseException(
+        plugin: 'cloud_firestore',
+        code: 'unavailable',
+        message: 'client is offline',
+      );
     await _pump(tester, payments: payments);
 
     await _fill(tester, amount: '40.00', allocations: {0: '40.00'});
@@ -684,6 +698,66 @@ void main() {
     expect(
       payments.createCalls[0].operationId,
       payments.createCalls[1].operationId,
+    );
+  });
+
+  testWidgets('shows a permission message instead of a connection message', (
+    tester,
+  ) async {
+    final payments = _FakePaymentRepository(debts: [
+      _debt(invoiceId: 'inv-1', remainingAmountFils: 40000),
+    ])
+      // Firestore rules rejected the write: the user is not a financial store
+      // member. Blaming the connection here would hide the real cause.
+      ..createError = FirebaseException(
+        plugin: 'cloud_firestore',
+        code: 'permission-denied',
+        message: 'Missing or insufficient permissions.',
+      );
+    await _pump(tester, payments: payments);
+
+    await _fill(tester, amount: '40.00', allocations: {0: '40.00'});
+    await _tapSave(tester);
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text(
+        'لا تملك صلاحية حفظ دفعات الموردين في هذا المتجر. راجع إدارة المتجر.',
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.text('تعذر حفظ الدفعة. تحقق من الاتصال وحاول مرة أخرى.'),
+      findsNothing,
+    );
+  });
+
+  testWidgets('shows a data-conflict message when the debt changed under us', (
+    tester,
+  ) async {
+    final payments = _FakePaymentRepository(debts: [
+      _debt(invoiceId: 'inv-1', remainingAmountFils: 40000),
+    ])
+      // The repository throws ArgumentError from phase 2 when the debt is no
+      // longer OPEN or its remaining balance no longer covers the allocation.
+      ..createError = ArgumentError(
+        'Allocation amount 40000 exceeds remaining debt 0 for invoice inv-1.',
+      );
+    await _pump(tester, payments: payments);
+
+    await _fill(tester, amount: '40.00', allocations: {0: '40.00'});
+    await _tapSave(tester);
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text(
+        'تغيّرت بيانات الفاتورة أثناء الحفظ. أعد تحميل قائمة الديون ثم أعد المحاولة.',
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.text('تعذر حفظ الدفعة. تحقق من الاتصال وحاول مرة أخرى.'),
+      findsNothing,
     );
   });
 
