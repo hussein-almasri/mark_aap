@@ -1,26 +1,39 @@
+import 'package:cloud_firestore/cloud_firestore.dart' show Timestamp;
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 
 import '../../../core/utils/price_amount.dart';
 import '../../../data/models/supplier_debt_model.dart';
 import '../../../data/models/supplier_payment_model.dart';
 import '../../../data/models/user_model.dart';
+import '../../../data/repositories/purchase_invoice_repository.dart';
 import '../../../data/repositories/supplier_payment_repository.dart';
 import '../supplier_payment_form_validator.dart';
 
 /// Full-screen form for recording a supplier payment against open debts.
 ///
 /// The debts come from [SupplierPaymentRepository.listOpenDebtsForCompany] for
-/// the company reached from the debt list. The user enters the payment in JOD
-/// (two decimals) and allocates it across one or more open debts, up to 5, with
-/// integer فلس arithmetic. Saving is blocked unless the allocations sum exactly
-/// to the payment amount. Saving reuses one cached `operationId` so a retry of
-/// the same logical payment resumes idempotently instead of posting twice.
+/// the company reached from the debt list — already only invoices that are
+/// `OPEN` with a positive balance. The user **selects** which invoices to settle
+/// (checkbox per invoice, at most 5, so the same invoice can never be picked
+/// twice) instead of typing an invoice number, then allocates the JOD amount
+/// across the selected invoices with integer فلس arithmetic.
+///
+/// Each option is labelled by the supplier's own invoice number when the
+/// purchase invoice carries one, otherwise by «فاتورة بدون رقم» (the supplier
+/// number is optional at invoice creation), together with the creation date and
+/// the remaining balance so invoices stay distinguishable. The number is a
+/// display aid only — allocations always reference the real internal
+/// [SupplierDebtModel.invoiceId]. Saving is blocked unless the allocations sum
+/// exactly to the payment amount, and one cached `operationId` is reused across
+/// retries so a failed save resumes idempotently instead of posting twice.
 class SupplierPaymentFormScreen extends StatefulWidget {
   const SupplierPaymentFormScreen({
     required this.user,
     required this.companyId,
     required this.companyName,
     this.paymentRepository,
+    this.invoiceRepository,
     super.key,
   });
 
@@ -28,6 +41,10 @@ class SupplierPaymentFormScreen extends StatefulWidget {
   final String companyId;
   final String companyName;
   final SupplierPaymentRepository? paymentRepository;
+
+  /// Read-only source for each invoice's optional `supplierInvoiceNumber`,
+  /// which the supplier debt documents do not carry.
+  final PurchaseInvoiceRepository? invoiceRepository;
 
   @override
   State<SupplierPaymentFormScreen> createState() =>
@@ -37,6 +54,8 @@ class SupplierPaymentFormScreen extends StatefulWidget {
 class _SupplierPaymentFormScreenState extends State<SupplierPaymentFormScreen> {
   late final SupplierPaymentRepository _payments =
       widget.paymentRepository ?? SupplierPaymentRepository();
+  late final PurchaseInvoiceRepository _invoices =
+      widget.invoiceRepository ?? PurchaseInvoiceRepository();
 
   final _formKey = GlobalKey<FormState>();
   final _amountController = TextEditingController();
@@ -44,6 +63,13 @@ class _SupplierPaymentFormScreenState extends State<SupplierPaymentFormScreen> {
   final List<TextEditingController> _allocationControllers = [];
 
   List<SupplierDebtModel> _debts = [];
+  final List<bool> _selected = [];
+
+  /// Invoice id → supplier invoice number, or `null` when the invoice has no
+  /// number (or could not be read). Missing values render as
+  /// «فاتورة بدون رقم».
+  final Map<String, String?> _supplierNumbers = {};
+
   bool _isLoadingDebts = true;
   String? _debtsError;
   bool _isSaving = false;
@@ -87,9 +113,11 @@ class _SupplierPaymentFormScreenState extends State<SupplierPaymentFormScreen> {
         widget.user.storeId,
         widget.companyId,
       );
+      // Resolve supplier numbers before revealing the form so labels render
+      // complete on first paint. Failures fall back per invoice, never throw.
+      final numbers = await _resolveSupplierNumbers(debts);
       if (!mounted) return;
       setState(() {
-        _debts = debts;
         for (final controller in _allocationControllers) {
           controller.dispose();
         }
@@ -98,6 +126,13 @@ class _SupplierPaymentFormScreenState extends State<SupplierPaymentFormScreen> {
           ..addAll(
             debts.map((_) => TextEditingController()..addListener(_onChanged)),
           );
+        _debts = debts;
+        _selected
+          ..clear()
+          ..addAll(List.filled(debts.length, false));
+        _supplierNumbers
+          ..clear()
+          ..addEntries(numbers.entries);
         _isLoadingDebts = false;
       });
     } catch (_) {
@@ -109,14 +144,69 @@ class _SupplierPaymentFormScreenState extends State<SupplierPaymentFormScreen> {
     }
   }
 
+  /// Best-effort lookup of each debt invoice's optional supplier number.
+  ///
+  /// A single-document `get` per invoice (allowed by `isFinancialStoreMember`
+  /// read rules); a missing or unreadable invoice yields `null` so its row falls
+  /// back to «فاتورة بدون رقم» instead of failing the whole form.
+  Future<Map<String, String?>> _resolveSupplierNumbers(
+    List<SupplierDebtModel> debts,
+  ) async {
+    final result = <String, String?>{};
+    await Future.wait(
+      debts.map((debt) async {
+        String? number;
+        try {
+          final invoice = await _invoices.getInvoice(
+            widget.user.storeId,
+            debt.invoiceId,
+          );
+          number = invoice.supplierInvoiceNumber;
+        } catch (_) {
+          number = null;
+        }
+        result[debt.invoiceId] =
+            (number == null || number.trim().isEmpty) ? null : number.trim();
+      }),
+    );
+    return result;
+  }
+
+  String _invoiceLabel(SupplierDebtModel debt) {
+    final number = _supplierNumbers[debt.invoiceId];
+    if (number == null || number.isEmpty) return 'فاتورة بدون رقم';
+    return number;
+  }
+
+  void _toggleSelection(int index, bool selected) {
+    if (_isSaving) return;
+    if (selected) {
+      final alreadySelected = _selected.where((value) => value).length;
+      if (alreadySelected >= 5) {
+        _showMessage('الحد الأقصى 5 فواتير في الدفعة الواحدة.');
+        return;
+      }
+    }
+    setState(() {
+      _selected[index] = selected;
+      // Deselecting clears the amount so a later re-selection starts clean.
+      if (!selected) _allocationControllers[index].clear();
+    });
+  }
+
   int? get _amountFils =>
       SupplierPaymentFormValidator.tryParseJodField(_amountController.text);
 
-  /// Per-debt allocated فلس; an unparsable field yields `null` so the payment
-  /// is treated as invalid and saving stays disabled.
+  /// Allocated فلس per debt: unselected debts always count as `0`, while a
+  /// selected debt yields `null` when its text is unparsable so the payment is
+  /// treated as invalid and saving stays disabled.
   List<int?> get _allocationFils => [
-    for (final controller in _allocationControllers)
-      SupplierPaymentFormValidator.tryParseJodField(controller.text),
+    for (var index = 0; index < _debts.length; index++)
+      _selected[index]
+          ? SupplierPaymentFormValidator.tryParseJodField(
+              _allocationControllers[index].text,
+            )
+          : 0,
   ];
 
   /// Per-debt remaining balance, used as the allocation upper bound.
@@ -133,14 +223,21 @@ class _SupplierPaymentFormScreenState extends State<SupplierPaymentFormScreen> {
   String? get _paymentError {
     final amount = _amountFils;
     final allocations = _allocationFils;
-    final remaining = _remainingFils;
     if (amount == null || allocations.any((value) => value == null)) {
       return 'تحقق من المبالغ المُدخلة.';
+    }
+    final selectedCount = _selected.where((value) => value).length;
+    if (selectedCount == 0) return 'اختر فاتورة واحدة على الأقل.';
+    if (selectedCount > 5) return 'الحد الأقصى 5 فواتير.';
+    for (var index = 0; index < _debts.length; index++) {
+      if (_selected[index] && allocations[index]! <= 0) {
+        return 'أدخل مبلغ التخصيص للفاتورة المختارة.';
+      }
     }
     return SupplierPaymentFormValidator.validatePayment(
       amountFils: amount,
       allocationFils: allocations.cast<int>(),
-      remainingFils: remaining,
+      remainingFils: _remainingFils,
     );
   }
 
@@ -156,14 +253,18 @@ class _SupplierPaymentFormScreenState extends State<SupplierPaymentFormScreen> {
     }
 
     final amount = _amountFils!;
-    final allocations = _allocationFils.cast<int>();
-    final allocationDebts = <SupplierDebtModel>[];
-    for (var index = 0; index < allocations.length; index++) {
-      if (allocations[index] > 0) allocationDebts.add(_debts[index]);
-    }
+    final selectedIndices = [
+      for (var index = 0; index < _debts.length; index++)
+        if (_selected[index]) index,
+    ];
+    // Allocations always reference the real internal invoice id, whether or not
+    // the supplier printed a number on it.
+    final allocationDebts = [for (final index in selectedIndices) _debts[index]];
     final allocationAmounts = [
-      for (var index = 0; index < allocations.length; index++)
-        if (allocations[index] > 0) allocations[index],
+      for (final index in selectedIndices)
+        SupplierPaymentFormValidator.tryParseJodField(
+          _allocationControllers[index].text,
+        )!,
     ];
 
     setState(() => _isSaving = true);
@@ -291,11 +392,17 @@ class _SupplierPaymentFormScreenState extends State<SupplierPaymentFormScreen> {
         _buildSourceField(),
         const SizedBox(height: 16),
         const Text(
-          'توزيع المبلغ على الفواتير',
+          'اختيار الفواتير وتوزيع المبلغ',
           style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
         ),
+        const SizedBox(height: 4),
+        const Text(
+          'اختر من ديون المورد المفتوحة (بحد أقصى 5 فواتير).',
+          style: TextStyle(fontSize: 12, color: Colors.grey),
+        ),
         const SizedBox(height: 8),
-        ..._debts.asMap().entries.map(_buildAllocationField),
+        for (var index = 0; index < _debts.length; index++)
+          _buildDebtRow(index),
         const SizedBox(height: 12),
         _buildSummary(),
         const SizedBox(height: 16),
@@ -338,27 +445,57 @@ class _SupplierPaymentFormScreenState extends State<SupplierPaymentFormScreen> {
     ],
   );
 
-  Widget _buildAllocationField(MapEntry<int, SupplierDebtModel> entry) {
-    final index = entry.key;
-    final debt = entry.value;
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: TextFormField(
-        controller: _allocationControllers[index],
-        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-        decoration: InputDecoration(
-          labelText: 'فاتورة ${debt.invoiceId}',
-          hintText: '0.00',
-          border: const OutlineInputBorder(),
-          suffixText: 'د.أ',
-          helperText: 'المتبقي: ${PriceAmount.formatJod2(debt.remainingAmountFils)}',
-        ),
-        validator: (value) => SupplierPaymentFormValidator
-            .validateAllocationField(
-              value,
-              maxFils: debt.remainingAmountFils,
-              label: 'فاتورة ${debt.invoiceId}',
+  /// One selectable invoice: label (supplier number or «فاتورة بدون رقم»),
+  /// creation date and remaining balance, plus the amount field once selected.
+  Widget _buildDebtRow(int index) {
+    final debt = _debts[index];
+    final label = _invoiceLabel(debt);
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          CheckboxListTile(
+            value: _selected[index],
+            controlAffinity: ListTileControlAffinity.leading,
+            dense: true,
+            onChanged: _isSaving
+                ? null
+                : (value) => _toggleSelection(index, value ?? false),
+            title: Text(label),
+            subtitle: Text(
+              '${_formatDate(debt.createdAt)}'
+              ' • المتبقي: ${PriceAmount.formatJod2(debt.remainingAmountFils)}',
             ),
+          ),
+          if (_selected[index])
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: TextFormField(
+                controller: _allocationControllers[index],
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                decoration: const InputDecoration(
+                  labelText: 'مبلغ التخصيص (د.أ)',
+                  hintText: '0.00',
+                  border: OutlineInputBorder(),
+                  suffixText: 'د.أ',
+                ),
+                validator: (value) {
+                  if (!_selected[index]) return null;
+                  if ((value?.trim() ?? '').isEmpty) {
+                    return 'أدخل مبلغ التخصيص.';
+                  }
+                  return SupplierPaymentFormValidator.validateAllocationField(
+                    value,
+                    maxFils: debt.remainingAmountFils,
+                    label: label,
+                  );
+                },
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -434,4 +571,7 @@ class _SupplierPaymentFormScreenState extends State<SupplierPaymentFormScreen> {
           : const Text('حفظ الدفعة'),
     ),
   );
+
+  String _formatDate(Timestamp timestamp) =>
+      DateFormat('dd/MM/yyyy - HH:mm').format(timestamp.toDate());
 }
