@@ -313,12 +313,13 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'operationId', 'type', 'createdBy', 'createdAt', 'status',
           'retryCount', 'errorCode', 'errorMessage', 'failedAt',
-          'invoiceId', 'paymentId', 'photoIds'
+          'invoiceId', 'paymentId', 'photoIds', 'withdrawalId'
         ])
         && data.operationId == operationId
         && data.type in [
           'CREATE_PURCHASE_INVOICE', 'CANCEL_PURCHASE_INVOICE',
-          'CREATE_SUPPLIER_PAYMENT', 'CANCEL_SUPPLIER_PAYMENT'
+          'CREATE_SUPPLIER_PAYMENT', 'CANCEL_SUPPLIER_PAYMENT',
+          'CREATE_MANUAL_WITHDRAWAL', 'CANCEL_MANUAL_WITHDRAWAL'
         ]
         && data.createdBy == request.auth.uid
         && data.createdAt is timestamp
@@ -333,29 +334,54 @@ service cloud.firestore {
 
       return isFinancialStoreMember(storeId)
         && validOperationFields(data, operationId)
-        && data.status == 'PROCESSING'
         && data.retryCount == 0
         && data.createdAt == request.time
-        && (data.type == 'CREATE_PURCHASE_INVOICE'
-          ? data.keys().hasAny(['invoiceId'])
-            && !data.keys().hasAny(['paymentId'])
-            && data.invoiceId == operationId
-            && (!data.keys().hasAny(['photoIds'])
-              || validInvoicePhotoIds(data.photoIds))
-          : (data.type == 'CREATE_SUPPLIER_PAYMENT'
-            ? data.keys().hasAny(['paymentId'])
-              && !data.keys().hasAny(['invoiceId', 'photoIds'])
-              && data.paymentId == operationId
-            : (data.type == 'CANCEL_PURCHASE_INVOICE'
-              ? isAdmin(storeId)
-                && data.keys().hasAny(['invoiceId'])
-                && !data.keys().hasAny(['paymentId', 'photoIds'])
-                && data.invoiceId is string
-              : (data.type == 'CANCEL_SUPPLIER_PAYMENT'
-                && isAdmin(storeId)
-                && data.keys().hasAny(['paymentId'])
-                && !data.keys().hasAny(['invoiceId', 'photoIds'])
-                && data.paymentId is string))));
+        && (data.type in [
+          'CREATE_PURCHASE_INVOICE', 'CREATE_SUPPLIER_PAYMENT',
+          'CANCEL_PURCHASE_INVOICE', 'CANCEL_SUPPLIER_PAYMENT'
+        ]
+          // Two-phase financial operations are created PROCESSING and flipped
+          // to COMPLETED later in the same save transaction.
+          ? data.status == 'PROCESSING'
+            && (data.type == 'CREATE_PURCHASE_INVOICE'
+              ? data.keys().hasAny(['invoiceId'])
+                && !data.keys().hasAny(['paymentId'])
+                && data.invoiceId == operationId
+                && (!data.keys().hasAny(['photoIds'])
+                  || validInvoicePhotoIds(data.photoIds))
+              : (data.type == 'CREATE_SUPPLIER_PAYMENT'
+                ? data.keys().hasAny(['paymentId'])
+                  && !data.keys().hasAny(['invoiceId', 'photoIds'])
+                  && data.paymentId == operationId
+                : (data.type == 'CANCEL_PURCHASE_INVOICE'
+                  ? isAdmin(storeId)
+                    && data.keys().hasAny(['invoiceId'])
+                    && !data.keys().hasAny(['paymentId', 'photoIds'])
+                    && data.invoiceId is string
+                  : (data.type == 'CANCEL_SUPPLIER_PAYMENT'
+                    && isAdmin(storeId)
+                    && data.keys().hasAny(['paymentId'])
+                    && !data.keys().hasAny(['invoiceId', 'photoIds'])
+                    && data.paymentId is string))))
+          // Manual withdrawals are written COMPLETED inside one transaction,
+          // so the operation and the withdrawal must appear together.
+          : (data.type == 'CREATE_MANUAL_WITHDRAWAL'
+            ? data.status == 'COMPLETED'
+              && data.keys().hasAny(['withdrawalId'])
+              && !data.keys().hasAny(['invoiceId', 'paymentId', 'photoIds'])
+              && data.withdrawalId is string
+              && data.withdrawalId != ''
+              && validManualWithdrawalCreateAfter(
+                storeId, data.withdrawalId, operationId, data.createdBy)
+            : (data.type == 'CANCEL_MANUAL_WITHDRAWAL'
+              && isAdmin(storeId)
+              && data.status == 'COMPLETED'
+              && data.keys().hasAny(['withdrawalId'])
+              && !data.keys().hasAny(['invoiceId', 'paymentId', 'photoIds'])
+              && data.withdrawalId is string
+              && data.withdrawalId != ''
+              && validManualWithdrawalCancelAfter(
+                storeId, data.withdrawalId, operationId, data.createdBy))));
     }
 
     function validOperationCompletion(storeId, operationId) {
@@ -942,10 +968,94 @@ service cloud.firestore {
           : !exists(withdrawalRef));
     }
 
+    function isManualWithdrawalType(value) {
+      return value in [
+        'PERSONAL_EXPENSE', 'EMPLOYEE_PAYMENT', 'BILL_PAYMENT',
+        'ELECTRICITY', 'SHOP_EXPENSE', 'OTHER'
+      ];
+    }
+
+    // `note` is optional, so the required and allowed key sets are checked
+    // separately (hasOnlyKeys demands every key be present).
+    function validManualWithdrawalKeys(data) {
+      return data.keys().hasAll([
+          'amountFils', 'type', 'source', 'withdrawalId', 'operationId',
+          'createdAt', 'createdBy', 'status'
+        ])
+        && data.keys().hasOnly([
+          'amountFils', 'type', 'source', 'withdrawalId', 'operationId',
+          'createdAt', 'createdBy', 'status', 'note'
+        ]);
+    }
+
+    // Both halves of a manual withdrawal are written in one transaction, so
+    // each rule re-reads the other document through getAfter.
+    function validManualWithdrawalCreateAfter(
+      storeId, withdrawalId, operationId, createdBy
+    ) {
+      let path = cashWithdrawalPath(storeId, withdrawalId);
+      let withdrawal = getAfter(path).data;
+
+      return existsAfter(path)
+        && validManualWithdrawalKeys(withdrawal)
+        && withdrawal.withdrawalId == withdrawalId
+        && withdrawal.operationId == operationId
+        && withdrawal.amountFils is int
+        && withdrawal.amountFils > 0
+        && isManualWithdrawalType(withdrawal.type)
+        && withdrawal.source == 'SHOP_CASH'
+        && withdrawal.createdAt == request.time
+        && withdrawal.createdBy == createdBy
+        && withdrawal.status == 'ACTIVE';
+    }
+
+    function validManualWithdrawalCancelAfter(
+      storeId, withdrawalId, operationId, cancelledBy
+    ) {
+      let path = cashWithdrawalPath(storeId, withdrawalId);
+      let withdrawal = getAfter(path).data;
+
+      return existsAfter(path)
+        && isManualWithdrawalType(withdrawal.type)
+        && withdrawal.source == 'SHOP_CASH'
+        && withdrawal.status == 'CANCELLED'
+        && withdrawal.cancelledBy == cancelledBy
+        && withdrawal.cancelledAt == request.time
+        && withdrawal.cancellationReason is string
+        && withdrawal.operationId is string
+        && withdrawal.operationId != operationId;
+    }
+
+    function validManualWithdrawalCreate(storeId, withdrawalId) {
+      let data = request.resource.data;
+
+      // A manual withdrawal may not claim a link to an invoice or a supplier
+      // payment: those keys are absent from the exact allowed key set.
+      return isFinancialStoreMember(storeId)
+        && validManualWithdrawalKeys(data)
+        && data.withdrawalId is string
+        && data.withdrawalId == withdrawalId
+        && data.operationId is string
+        && data.amountFils is int
+        && data.amountFils > 0
+        && isManualWithdrawalType(data.type)
+        && data.type != 'PURCHASE_INVOICE'
+        && data.source == 'SHOP_CASH'
+        && data.createdAt == request.time
+        && data.createdBy == request.auth.uid
+        && data.status == 'ACTIVE'
+        && validCompletedOperationAfter(
+          storeId, data.operationId, 'CREATE_MANUAL_WITHDRAWAL',
+          withdrawalId, 'withdrawalId');
+    }
+
     function validCashWithdrawalCreate(storeId, withdrawalId) {
-      return request.resource.data.keys().hasAny(['invoiceId'])
+      let data = request.resource.data;
+      return data.keys().hasAny(['invoiceId'])
         ? validInvoiceWithdrawalCreate(storeId, withdrawalId)
-        : validSupplierPaymentWithdrawalCreate(storeId, withdrawalId);
+        : (data.keys().hasAny(['supplierPaymentId'])
+          ? validSupplierPaymentWithdrawalCreate(storeId, withdrawalId)
+          : validManualWithdrawalCreate(storeId, withdrawalId));
     }
 
     function validInvoiceWithdrawalCreate(storeId, withdrawalId) {
@@ -1000,7 +1110,7 @@ service cloud.firestore {
         && payment.status == 'ACTIVE';
     }
 
-    function validCashWithdrawalUpdate(storeId) {
+    function validSupplierPaymentWithdrawalCancel(storeId) {
       let paymentId = resource.data.keys().hasAny(['supplierPaymentId'])
         ? resource.data.supplierPaymentId : '';
       let paymentPath = supplierPaymentPath(storeId, paymentId);
@@ -1019,6 +1129,36 @@ service cloud.firestore {
         && paymentBefore.status == 'ACTIVE'
         && paymentAfter.status == 'CANCELLED'
         && paymentAfter.cancellationOperationId is string;
+    }
+
+    function validManualWithdrawalCancel(storeId) {
+      let data = request.resource.data;
+
+      return isAdmin(storeId)
+        && isManualWithdrawalType(resource.data.type)
+        && resource.data.source == 'SHOP_CASH'
+        && resource.data.status == 'ACTIVE'
+        && data.status == 'CANCELLED'
+        && data.diff(resource.data).affectedKeys().hasOnly([
+          'status', 'cancelledAt', 'cancelledBy', 'cancellationReason',
+          'cancellationOperationId'
+        ])
+        && data.cancelledAt == request.time
+        && data.cancelledBy == request.auth.uid
+        && data.cancellationReason is string
+        && data.cancellationReason == data.cancellationReason.trim()
+        && data.cancellationReason.matches('.*\\S.*')
+        && data.cancellationReason.size() <= 500
+        && data.cancellationOperationId is string
+        && validCompletedOperationAfter(
+          storeId, data.cancellationOperationId, 'CANCEL_MANUAL_WITHDRAWAL',
+          resource.data.withdrawalId, 'withdrawalId');
+    }
+
+    function validCashWithdrawalUpdate(storeId) {
+      return resource.data.keys().hasAny(['supplierPaymentId'])
+        ? validSupplierPaymentWithdrawalCancel(storeId)
+        : validManualWithdrawalCancel(storeId);
     }
 
     function validInvoicePhotoMetadataCreate(storeId, invoiceId, photoId) {
@@ -1661,8 +1801,13 @@ service cloud.firestore {
       }
 
       match /operations/{operationId} {
+        // A member may always read an operation that does not exist yet: the
+        // manual-withdrawal save reads it inside its transaction to gate a
+        // retry, and a missing document leaks nothing. Existing operations
+        // stay restricted to their author or an admin.
         allow get: if isFinancialStoreMember(storeId)
-          && (resource.data.createdBy == request.auth.uid
+          && (resource == null
+            || resource.data.createdBy == request.auth.uid
             || isAdmin(storeId));
         allow list: if false;
         allow create: if validOperationCreate(storeId, operationId);

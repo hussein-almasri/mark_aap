@@ -57,6 +57,8 @@ class CashWithdrawalModel {
     this.invoiceId,
     this.supplierPaymentId,
     this.note,
+    this.operationId,
+    this.cancellationOperationId,
   }) {
     _requireId(withdrawalId, 'withdrawalId');
     _requirePositive(amountFils, 'amountFils');
@@ -121,6 +123,14 @@ class CashWithdrawalModel {
   final String createdBy;
   final CashWithdrawalStatus status;
 
+  /// Manual withdrawals carry the CREATE_MANUAL_WITHDRAWAL operation that was
+  /// written in the same transaction; automatic ones are linked through their
+  /// invoice or supplier payment instead.
+  final String? operationId;
+
+  /// Set when an admin cancelled this manual withdrawal.
+  final String? cancellationOperationId;
+
   factory CashWithdrawalModel.fromDocument(
     DocumentSnapshot<Map<String, dynamic>> document,
   ) {
@@ -156,6 +166,8 @@ class CashWithdrawalModel {
         createdAt: _requiredTimestamp(data, 'createdAt'),
         createdBy: _requiredString(data, 'createdBy'),
         status: CashWithdrawalStatus.fromValue(_requiredString(data, 'status')),
+        operationId: _optionalString(data, 'operationId'),
+        cancellationOperationId: _optionalString(data, 'cancellationOperationId'),
       );
 
   Map<String, dynamic> toData() => {
@@ -168,6 +180,9 @@ class CashWithdrawalModel {
         'createdAt': createdAt,
         'createdBy': createdBy,
         'status': status.value,
+        if (operationId != null) 'operationId': operationId,
+        if (cancellationOperationId != null)
+          'cancellationOperationId': cancellationOperationId,
       };
 }
 

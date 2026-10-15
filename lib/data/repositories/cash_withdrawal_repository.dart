@@ -72,10 +72,6 @@ class CashWithdrawalRepository {
           type, 'type', 'PURCHASE_INVOICE is not a manual withdrawal type.');
     }
 
-    if (SupplierPaymentSource.shopCash != SupplierPaymentSource.shopCash) {
-      // Validation passed - source is SHOP_CASH by convention for manual
-    }
-
     return await _firestore.runTransaction((Transaction transaction) async {
       // 1. Idempotency check: verify operationId does not already exist
       final operationRef = operations(storeId).doc(operationId);
@@ -87,17 +83,20 @@ class CashWithdrawalRepository {
       }
 
       // 2. Build the withdrawal map manually (following PurchaseInvoiceRepository pattern)
-      //    using FieldValue.serverTimestamp() for createdAt
+      //    using FieldValue.serverTimestamp() for createdAt.
+      //    `operationId` links this document to its CREATE_MANUAL_WITHDRAWAL
+      //    operation; the rules require the pair to appear in one transaction.
       final withdrawalData = <String, dynamic>{
         'amountFils': amountFils,
         'type': type.value,
         'source': SupplierPaymentSource.shopCash.value,
         'withdrawalId': withdrawalId,
+        'operationId': operationId,
         'createdAt': FieldValue.serverTimestamp(),
         'createdBy': createdBy,
         'status': 'ACTIVE',
-        if (note != null) 'note': note,
-        // Manual withdrawals have no invoiceId or supplierPaymentId
+        'note': ?note,
+        // Manual withdrawals have no invoiceId or supplierPaymentId.
       };
 
       // 3. Create the withdrawal document
@@ -109,6 +108,7 @@ class CashWithdrawalRepository {
       transaction.set(opRef, {
         'operationId': operationId,
         'type': 'CREATE_MANUAL_WITHDRAWAL',
+        'withdrawalId': withdrawalId,
         'createdBy': createdBy,
         'createdAt': FieldValue.serverTimestamp(),
         'status': 'COMPLETED',
@@ -153,6 +153,7 @@ class CashWithdrawalRepository {
         'cancelledBy': cancelledBy,
         'cancelledAt': FieldValue.serverTimestamp(),
         'cancellationReason': reason,
+        'cancellationOperationId': operationId,
       });
 
       // 3. Create the cancellation operation/idempotency record atomically
@@ -163,6 +164,7 @@ class CashWithdrawalRepository {
         transaction.set(opRef, {
           'operationId': operationId,
           'type': 'CANCEL_MANUAL_WITHDRAWAL',
+          'withdrawalId': withdrawalId,
           'createdBy': cancelledBy,
           'createdAt': FieldValue.serverTimestamp(),
           'status': 'COMPLETED',
