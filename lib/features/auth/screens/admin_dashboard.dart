@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../data/models/user_model.dart';
+import '../../cashbox/cash_box_screen.dart';
 import '../../companies/screens/company_management_screen.dart';
 import '../../customers/screens/customer_management_screen.dart';
 import '../../debts/screens/debt_management_screen.dart';
@@ -132,6 +133,19 @@ class AdminDashboard extends StatelessWidget {
               MaterialPageRoute(
                 builder: (_) => SupplierDebtListScreen(user: user),
               ),
+            ),
+          ),
+        ),
+        Card(
+          child: ListTile(
+            leading: const CircleAvatar(
+              child: Icon(Icons.savings_outlined),
+            ),
+            title: const Text('صندوق النقد'),
+            subtitle: const Text('الرصيد والإيداعات وسجل حركات الصندوق'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push<void>(
+              MaterialPageRoute(builder: (_) => CashBoxScreen(user: user)),
             ),
           ),
         ),

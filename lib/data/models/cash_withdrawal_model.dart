@@ -58,6 +58,9 @@ class CashWithdrawalModel {
     this.supplierPaymentId,
     this.note,
     this.operationId,
+    this.cancelledAt,
+    this.cancelledBy,
+    this.cancellationReason,
     this.cancellationOperationId,
   }) {
     _requireId(withdrawalId, 'withdrawalId');
@@ -110,6 +113,14 @@ class CashWithdrawalModel {
       // Manual ID does not use automatic prefixes - just validate it's a non-empty ID
       _requireId(withdrawalId, 'withdrawalId');
     }
+
+    _validateCancellation(
+      status: status,
+      cancelledAt: cancelledAt,
+      cancelledBy: cancelledBy,
+      cancellationReason: cancellationReason,
+      cancellationOperationId: cancellationOperationId,
+    );
   }
 
   final String withdrawalId;
@@ -128,7 +139,11 @@ class CashWithdrawalModel {
   /// invoice or supplier payment instead.
   final String? operationId;
 
-  /// Set when an admin cancelled this manual withdrawal.
+  /// Cancellation metadata, set together when an admin cancelled the
+  /// withdrawal (the Firestore rules require the complete set).
+  final Timestamp? cancelledAt;
+  final String? cancelledBy;
+  final String? cancellationReason;
   final String? cancellationOperationId;
 
   factory CashWithdrawalModel.fromDocument(
@@ -167,7 +182,11 @@ class CashWithdrawalModel {
         createdBy: _requiredString(data, 'createdBy'),
         status: CashWithdrawalStatus.fromValue(_requiredString(data, 'status')),
         operationId: _optionalString(data, 'operationId'),
-        cancellationOperationId: _optionalString(data, 'cancellationOperationId'),
+        cancelledAt: _optionalTimestamp(data, 'cancelledAt'),
+        cancelledBy: _optionalString(data, 'cancelledBy'),
+        cancellationReason: _optionalString(data, 'cancellationReason'),
+        cancellationOperationId:
+            _optionalString(data, 'cancellationOperationId'),
       );
 
   Map<String, dynamic> toData() => {
@@ -181,6 +200,10 @@ class CashWithdrawalModel {
         'createdBy': createdBy,
         'status': status.value,
         if (operationId != null) 'operationId': operationId,
+        if (cancelledAt != null) 'cancelledAt': cancelledAt,
+        if (cancelledBy != null) 'cancelledBy': cancelledBy,
+        if (cancellationReason != null)
+          'cancellationReason': cancellationReason,
         if (cancellationOperationId != null)
           'cancellationOperationId': cancellationOperationId,
       };
@@ -212,6 +235,54 @@ Timestamp _requiredTimestamp(Map<String, dynamic> data, String key) {
     throw FormatException('Cash withdrawal $key must be a Timestamp.');
   }
   return value;
+}
+
+Timestamp? _optionalTimestamp(Map<String, dynamic> data, String key) {
+  final value = data[key];
+  if (value != null && value is! Timestamp) {
+    throw FormatException('Cash withdrawal $key must be a Timestamp.');
+  }
+  return value as Timestamp?;
+}
+
+// Mirrors the Firestore rules for a cancelled withdrawal
+// (see validManualWithdrawalCancel): cancellation data is only allowed
+// together with the CANCELLED status, and a cancelled document must carry
+// the complete set. The same shape as PurchaseInvoiceModel._validateCancellation.
+void _validateCancellation({
+  required CashWithdrawalStatus status,
+  required Timestamp? cancelledAt,
+  required String? cancelledBy,
+  required String? cancellationReason,
+  required String? cancellationOperationId,
+}) {
+  final values = [
+    cancelledAt,
+    cancelledBy,
+    cancellationReason,
+    cancellationOperationId,
+  ];
+  if (status == CashWithdrawalStatus.active) {
+    if (values.any((value) => value != null)) {
+      throw ArgumentError(
+          'Active cash withdrawals cannot contain cancellation data.');
+    }
+    return;
+  }
+  if (values.any((value) => value == null)) {
+    throw ArgumentError(
+        'Cancelled cash withdrawals require complete cancellation data.');
+  }
+  _requireId(cancelledBy!, 'cancelledBy');
+  _requireId(cancellationOperationId!, 'cancellationOperationId');
+  _requireCancellationReason(cancellationReason!, 'cancellationReason');
+}
+
+void _requireCancellationReason(String value, String field) {
+  if (value != value.trim() || value.isEmpty || value.length > 500) {
+    throw ArgumentError.value(
+        value, field, 'Must be trimmed, non-empty and <= 500 characters.');
+  }
 }
 
 void _requireId(String value, String field) {

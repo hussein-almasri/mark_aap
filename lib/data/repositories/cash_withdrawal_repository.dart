@@ -120,6 +120,22 @@ class CashWithdrawalRepository {
     });
   }
 
+  /// Validates a cancellation reason the same way the Firestore rules do
+  /// (see validManualWithdrawalCancel): trimmed, non-empty and at most 500
+  /// characters. Public so the contract can be pinned by tests that run
+  /// without a Firestore platform host.
+  static String validateCancellationReason(String reason) {
+    final trimmed = reason.trim();
+    if (reason != trimmed || trimmed.isEmpty || trimmed.length > 500) {
+      throw ArgumentError.value(
+        reason,
+        'reason',
+        'Reason must be trimmed, non-empty and at most 500 characters.',
+      );
+    }
+    return trimmed;
+  }
+
   /// Admin-only cancellation of a cash withdrawal.
   /// Preserves the withdrawal document, marks CANCELLED, records metadata,
   /// and creates the cancellation operation atomically.
@@ -130,6 +146,7 @@ class CashWithdrawalRepository {
     required String cancelledBy,
     required String reason,
   }) async {
+    validateCancellationReason(reason);
     return await _firestore.runTransaction((Transaction transaction) async {
       // Read the withdrawal document
       final withdrawalRef = cashWithdrawals(storeId).doc(withdrawalId);

@@ -228,6 +228,16 @@ class _FakeInvoiceRepository implements PurchaseInvoiceRepository {
     required String operationId,
   }) =>
       throw UnimplementedError();
+
+  @override
+  Future<void> cancelInvoice({
+    required String storeId,
+    required String invoiceId,
+    required String operationId,
+    required String cancelledBy,
+    required String reason,
+  }) =>
+      throw UnimplementedError();
 }
 
 PurchaseInvoiceModel _invoice({

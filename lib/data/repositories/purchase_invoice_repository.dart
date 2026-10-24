@@ -8,6 +8,24 @@ class InvoiceAlreadyExistsException implements Exception {
   String toString() => 'InvoiceAlreadyExistsException';
 }
 
+class InvoiceAlreadyCancelledException implements Exception {
+  const InvoiceAlreadyCancelledException();
+  @override
+  String toString() => 'InvoiceAlreadyCancelledException';
+}
+
+class InvoiceNotFoundException implements Exception {
+  const InvoiceNotFoundException();
+  @override
+  String toString() => 'InvoiceNotFoundException';
+}
+
+class InvoiceNotActiveException implements Exception {
+  const InvoiceNotActiveException();
+  @override
+  String toString() => 'InvoiceNotActiveException';
+}
+
 class PurchaseInvoiceRepository {
   PurchaseInvoiceRepository({FirebaseFirestore? firestore})
     : _firestore = firestore ?? FirebaseFirestore.instance;
@@ -189,5 +207,128 @@ class PurchaseInvoiceRepository {
 
     // ----- Return the invoice ID -----
     return operationId;
+  }
+
+  /// Validates a cancellation reason the same way the Firestore rules do
+  /// (see validInvoiceCancellation): trimmed, non-empty and at most 500
+  /// characters. Public so the contract can be pinned by tests.
+  static String validateCancellationReason(String reason) {
+    final trimmed = reason.trim();
+    if (reason != trimmed || trimmed.isEmpty || trimmed.length > 500) {
+      throw ArgumentError.value(
+        reason,
+        'reason',
+        'Reason must be trimmed, non-empty and at most 500 characters.',
+      );
+    }
+    return trimmed;
+  }
+
+  /// Cancels a purchase invoice, reversing everything it created, in the
+  /// same two-phase shape as [createInvoice]:
+  ///
+  ///  1. Write the [operations] record with status `PROCESSING`
+  ///     (`validOperationCreate` demands PROCESSING for
+  ///     `CANCEL_PURCHASE_INVOICE`).
+  ///  2. In one atomic transaction: flip the invoice to `CANCELLED`, cancel
+  ///     its supplier debt (when one exists), cancel its automatic shop-cash
+  ///     withdrawal (when one exists), and flip the operation to `COMPLETED`.
+  ///
+  /// The withdrawal is only touched when the invoice paid part of its value
+  /// from the shop cash (`shopCashAmountFils > 0`); an invoice without one
+  /// cancels cleanly. The rules cross-check that the withdrawal belongs to
+  /// this invoice and that its amount matches the shop-cash amount, so a
+  /// foreign or inconsistent withdrawal makes the whole transaction fail -
+  /// there is no half-cancelled state.
+  Future<void> cancelInvoice({
+    required String storeId,
+    required String invoiceId,
+    required String operationId,
+    required String cancelledBy,
+    required String reason,
+  }) async {
+    validateCancellationReason(reason);
+
+    final operationRef = operations(storeId).doc(operationId);
+    final invoiceRef = purchaseInvoices(storeId).doc(invoiceId);
+
+    // ----- Idempotency gate (outside any transaction) -----
+    final existingOperation = await operationRef.get();
+    if (existingOperation.exists) {
+      if (existingOperation.data()?['status'] == 'COMPLETED') {
+        throw const InvoiceAlreadyCancelledException();
+      }
+      // status == 'PROCESSING': a previous attempt did not finish phase 2.
+      // Resume phase 2 only - it is deterministic for this operationId.
+    } else {
+      // ----- Phase 1: create the cancellation operation as PROCESSING -----
+      await operationRef.set({
+        'operationId': operationId,
+        'type': 'CANCEL_PURCHASE_INVOICE',
+        'createdBy': cancelledBy,
+        'createdAt': FieldValue.serverTimestamp(),
+        'status': 'PROCESSING',
+        'retryCount': 0,
+        'invoiceId': invoiceId,
+      });
+    }
+
+    // ----- Phase 2: atomic invoice + debt? + withdrawal? + operation -----
+    await _firestore.runTransaction((Transaction transaction) async {
+      // Guard against a concurrent completion racing this retry.
+      final invoiceSnapshot = await transaction.get(invoiceRef);
+      if (!invoiceSnapshot.exists) {
+        throw const InvoiceNotFoundException();
+      }
+      final invoiceData = invoiceSnapshot.data()!;
+      final currentStatus = invoiceData['status'] as String?;
+      if (currentStatus == 'CANCELLED') {
+        throw const InvoiceAlreadyCancelledException();
+      }
+      if (currentStatus != 'ACTIVE') {
+        throw const InvoiceNotActiveException();
+      }
+
+      final opSnapshot = await transaction.get(operationRef);
+      if (opSnapshot.exists && opSnapshot.data()?['status'] == 'COMPLETED') {
+        throw const InvoiceAlreadyCancelledException();
+      }
+
+      // 1. Purchase invoice: flip to CANCELLED with its audit trail. The
+      //    rules allow exactly these five fields to change.
+      transaction.update(invoiceRef, {
+        'status': 'CANCELLED',
+        'cancelledAt': FieldValue.serverTimestamp(),
+        'cancelledBy': cancelledBy,
+        'cancellationReason': reason,
+        'cancellationOperationId': operationId,
+      });
+
+      // 2. Supplier debt - only when one exists. Zero-amount invoices never
+      //    wrote a debt document, so there is nothing to cancel.
+      final supplierDebtAmountFils =
+          invoiceData['supplierDebtAmountFils'] as int? ?? 0;
+      if (supplierDebtAmountFils > 0) {
+        transaction.update(supplierDebts(storeId).doc(invoiceId), {
+          'status': 'CANCELLED',
+          'lastOperationId': operationId,
+        });
+      }
+
+      // 3. Automatic cash withdrawal - only when the invoice paid from the
+      //    shop cash. Only its status flips; the rules verify it belongs to
+      //    this invoice (`invoice_invoiceId`) and matches the amount.
+      final shopCashAmountFils =
+          invoiceData['shopCashAmountFils'] as int? ?? 0;
+      if (shopCashAmountFils > 0) {
+        transaction.update(
+          cashWithdrawals(storeId).doc('invoice_$invoiceId'),
+          {'status': 'CANCELLED'},
+        );
+      }
+
+      // 4. Flip the cancellation operation to COMPLETED.
+      transaction.update(operationRef, {'status': 'COMPLETED'});
+    });
   }
 }

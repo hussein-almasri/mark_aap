@@ -1,4 +1,4 @@
-import 'package:flutter_test/flutter/test.dart';
+import 'package:flutter_test/flutter_test.dart';
 
 import 'package:mark_aap/data/models/purchase_invoice_model.dart';
 import 'package:mark_aap/data/repositories/purchase_invoice_repository.dart';
@@ -215,6 +215,38 @@ void main() {
       final invoices = await repo.listInvoices(testStoreId);
       expect(invoices.length, 2);
       expect(invoices.map((i) => i.companyName).toSet(), {'Supplier A', 'Supplier B'});
+    });
+  });
+
+  group('PurchaseInvoiceRepository.validateCancellationReason', () {
+    test('accepts a trimmed non-empty reason up to 500 characters', () {
+      expect(
+        PurchaseInvoiceRepository.validateCancellationReason('Incorrect invoice'),
+        'Incorrect invoice',
+      );
+      expect(
+        PurchaseInvoiceRepository.validateCancellationReason('x' * 500),
+        'x' * 500,
+      );
+    });
+
+    test('rejects empty, blank, untrimmed and oversized reasons', () {
+      expect(
+        () => PurchaseInvoiceRepository.validateCancellationReason(''),
+        throwsArgumentError,
+      );
+      expect(
+        () => PurchaseInvoiceRepository.validateCancellationReason('   '),
+        throwsArgumentError,
+      );
+      expect(
+        () => PurchaseInvoiceRepository.validateCancellationReason(' padded '),
+        throwsArgumentError,
+      );
+      expect(
+        () => PurchaseInvoiceRepository.validateCancellationReason('x' * 501),
+        throwsArgumentError,
+      );
     });
   });
 }

@@ -122,6 +122,14 @@ service cloud.firestore {
       return /databases/$(database)/documents/stores/$(storeId)/cashWithdrawals/$(withdrawalId);
     }
 
+    function cashBoxPath(storeId, docId) {
+      return /databases/$(database)/documents/stores/$(storeId)/cashBox/$(docId);
+    }
+
+    function cashDepositPath(storeId, depositId) {
+      return /databases/$(database)/documents/stores/$(storeId)/cashDeposits/$(depositId);
+    }
+
     function operationPath(storeId, operationId) {
       return /databases/$(database)/documents/stores/$(storeId)/operations/$(operationId);
     }
@@ -313,13 +321,16 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'operationId', 'type', 'createdBy', 'createdAt', 'status',
           'retryCount', 'errorCode', 'errorMessage', 'failedAt',
-          'invoiceId', 'paymentId', 'photoIds', 'withdrawalId'
+          'invoiceId', 'paymentId', 'photoIds', 'withdrawalId',
+          'depositId', 'cashBoxId'
         ])
         && data.operationId == operationId
         && data.type in [
           'CREATE_PURCHASE_INVOICE', 'CANCEL_PURCHASE_INVOICE',
           'CREATE_SUPPLIER_PAYMENT', 'CANCEL_SUPPLIER_PAYMENT',
-          'CREATE_MANUAL_WITHDRAWAL', 'CANCEL_MANUAL_WITHDRAWAL'
+          'CREATE_MANUAL_WITHDRAWAL', 'CANCEL_MANUAL_WITHDRAWAL',
+          'SET_OPENING_BALANCE', 'AMEND_OPENING_BALANCE',
+          'CREATE_CASH_DEPOSIT'
         ]
         && data.createdBy == request.auth.uid
         && data.createdAt is timestamp
@@ -363,25 +374,62 @@ service cloud.firestore {
                     && data.keys().hasAny(['paymentId'])
                     && !data.keys().hasAny(['invoiceId', 'photoIds'])
                     && data.paymentId is string))))
-          // Manual withdrawals are written COMPLETED inside one transaction,
-          // so the operation and the withdrawal must appear together.
-          : (data.type == 'CREATE_MANUAL_WITHDRAWAL'
-            ? data.status == 'COMPLETED'
-              && data.keys().hasAny(['withdrawalId'])
-              && !data.keys().hasAny(['invoiceId', 'paymentId', 'photoIds'])
-              && data.withdrawalId is string
-              && data.withdrawalId != ''
-              && validManualWithdrawalCreateAfter(
-                storeId, data.withdrawalId, operationId, data.createdBy)
-            : (data.type == 'CANCEL_MANUAL_WITHDRAWAL'
-              && isAdmin(storeId)
+          // Cash-box records (opening balance + deposits) are admin-only and
+          // written COMPLETED inside one transaction, so the operation and
+          // the cash-box document must appear together.
+          : (data.type == 'SET_OPENING_BALANCE'
+            ? isAdmin(storeId)
               && data.status == 'COMPLETED'
-              && data.keys().hasAny(['withdrawalId'])
-              && !data.keys().hasAny(['invoiceId', 'paymentId', 'photoIds'])
-              && data.withdrawalId is string
-              && data.withdrawalId != ''
-              && validManualWithdrawalCancelAfter(
-                storeId, data.withdrawalId, operationId, data.createdBy))));
+              && data.keys().hasAny(['cashBoxId'])
+              && !data.keys().hasAny([
+                'invoiceId', 'paymentId', 'photoIds', 'withdrawalId',
+                'depositId'
+              ])
+              && data.cashBoxId == 'openingBalance'
+              && validOpeningBalanceSetAfter(
+                storeId, operationId, data.createdBy)
+            : (data.type == 'AMEND_OPENING_BALANCE'
+              ? isAdmin(storeId)
+                && data.status == 'COMPLETED'
+                && data.keys().hasAny(['cashBoxId'])
+                && !data.keys().hasAny([
+                  'invoiceId', 'paymentId', 'photoIds', 'withdrawalId',
+                  'depositId'
+                ])
+                && data.cashBoxId == 'openingBalance'
+                && validOpeningBalanceAmendAfter(
+                  storeId, operationId, data.createdBy)
+              : (data.type == 'CREATE_CASH_DEPOSIT'
+                ? isAdmin(storeId)
+                  && data.status == 'COMPLETED'
+                  && data.keys().hasAny(['depositId'])
+                  && !data.keys().hasAny([
+                    'invoiceId', 'paymentId', 'photoIds', 'withdrawalId',
+                    'cashBoxId'
+                  ])
+                  && data.depositId is string
+                  && data.depositId != ''
+                  && data.depositId == operationId
+                  && validCashDepositCreateAfter(
+                    storeId, data.depositId, operationId, data.createdBy)
+                : (data.type == 'CREATE_MANUAL_WITHDRAWAL'
+                  ? data.status == 'COMPLETED'
+                    && data.keys().hasAny(['withdrawalId'])
+                    && !data.keys().hasAny(['invoiceId', 'paymentId', 'photoIds'])
+                    && data.withdrawalId is string
+                    && data.withdrawalId != ''
+                    && validManualWithdrawalCreateAfter(
+                      storeId, data.withdrawalId, operationId, data.createdBy)
+                  : (data.type == 'CANCEL_MANUAL_WITHDRAWAL'
+                    && isAdmin(storeId)
+                    && data.status == 'COMPLETED'
+                    && data.keys().hasAny(['withdrawalId'])
+                    && !data.keys().hasAny(['invoiceId', 'paymentId', 'photoIds'])
+                    && data.withdrawalId is string
+                    && data.withdrawalId != ''
+                    && validManualWithdrawalCancelAfter(
+                      storeId, data.withdrawalId, operationId,
+                      data.createdBy)))))));
     }
 
     function validOperationCompletion(storeId, operationId) {
@@ -577,6 +625,7 @@ service cloud.firestore {
 
     function validInvoiceCancellation(storeId, invoiceId) {
       let debtRef = supplierDebtPath(storeId, invoiceId);
+      let withdrawalRef = cashWithdrawalPath(storeId, 'invoice_' + invoiceId);
       let data = request.resource.data;
 
       return isAdmin(storeId)
@@ -594,9 +643,28 @@ service cloud.firestore {
         && data.cancellationReason.size() <= 500
         && data.cancellationOperationId is string
         && validInvoiceCancelOperationAfter(storeId, invoiceId, data)
+        // The supplier debt is cancelled in the same batch. Without one
+        // (supplierDebtAmountFils == 0) none is required; with one it must
+        // exist, belong to this invoice, and be CANCELLED afterwards.
         && (resource.data.supplierDebtAmountFils == 0
           ? !exists(debtRef)
-          : existsAfter(debtRef));
+          : (exists(debtRef)
+            && existsAfter(debtRef)
+            && getAfter(debtRef).data.status == 'CANCELLED'
+            && getAfter(debtRef).data.invoiceId == invoiceId
+            && getAfter(debtRef).data.lastOperationId
+              == data.cancellationOperationId))
+        // The automatic shop-cash withdrawal is reversed in the same batch.
+        // Without one (shopCashAmountFils == 0) none is required; with one it
+        // must exist, belong to this invoice, and be CANCELLED afterwards.
+        && (resource.data.shopCashAmountFils == 0
+          ? !exists(withdrawalRef)
+          : (exists(withdrawalRef)
+            && existsAfter(withdrawalRef)
+            && getAfter(withdrawalRef).data.status == 'CANCELLED'
+            && getAfter(withdrawalRef).data.invoiceId == invoiceId
+            && getAfter(withdrawalRef).data.amountFils
+              == resource.data.shopCashAmountFils));
     }
 
     function fixedAllocationTotal(data) {
@@ -1049,6 +1117,141 @@ service cloud.firestore {
           withdrawalId, 'withdrawalId');
     }
 
+    // ----- Cash box (opening balance + deposits) -----
+
+    // `openingBalanceFils` is the base record of the shop cash box. The four
+    // creation keys are mandatory; the amendment keys are only present after
+    // an explicit audited amendment.
+    function validOpeningBalanceKeys(data) {
+      return data.keys().hasAll([
+          'openingBalanceFils', 'createdAt', 'createdBy', 'operationId'
+        ])
+        && data.keys().hasOnly([
+          'openingBalanceFils', 'createdAt', 'createdBy', 'operationId',
+          'amendedAt', 'amendedBy', 'amendedReason', 'lastOperationId'
+        ]);
+    }
+
+    function validOpeningBalanceAmount(data) {
+      return data.openingBalanceFils is int
+        && data.openingBalanceFils >= 0;
+    }
+
+    function validCashReason(value) {
+      return value is string
+        && value == value.trim()
+        && value.matches('.*\\S.*')
+        && value.size() <= 500;
+    }
+
+    // Both cash-box halves are written COMPLETED inside one transaction, so
+    // each rule re-reads the paired document through getAfter.
+    function validOpeningBalanceSetAfter(storeId, operationId, createdBy) {
+      let path = cashBoxPath(storeId, 'openingBalance');
+      let balance = getAfter(path).data;
+
+      return existsAfter(path)
+        && validOpeningBalanceKeys(balance)
+        && validOpeningBalanceAmount(balance)
+        && balance.createdAt == request.time
+        && balance.createdBy == createdBy
+        && balance.operationId == operationId
+        && !balance.keys().hasAny([
+          'amendedAt', 'amendedBy', 'amendedReason', 'lastOperationId'
+        ]);
+    }
+
+    function validOpeningBalanceAmendAfter(storeId, operationId, amendedBy) {
+      let path = cashBoxPath(storeId, 'openingBalance');
+      let balance = getAfter(path).data;
+
+      return existsAfter(path)
+        && validOpeningBalanceKeys(balance)
+        && validOpeningBalanceAmount(balance)
+        && balance.amendedAt == request.time
+        && balance.amendedBy == amendedBy
+        && validCashReason(balance.amendedReason)
+        && balance.lastOperationId == operationId;
+    }
+
+    function validCashDepositKeys(data) {
+      return hasOnlyKeys(data, [
+        'amountFils', 'note', 'createdBy', 'createdAt', 'status', 'operationId'
+      ]);
+    }
+
+    function validCashDepositCreateAfter(
+      storeId, depositId, operationId, createdBy
+    ) {
+      let path = cashDepositPath(storeId, depositId);
+      let deposit = getAfter(path).data;
+
+      return existsAfter(path)
+        && validCashDepositKeys(deposit)
+        && deposit.amountFils is int
+        && deposit.amountFils > 0
+        && validCashReason(deposit.note)
+        && deposit.createdAt == request.time
+        && deposit.createdBy == createdBy
+        && deposit.status == 'ACTIVE'
+        && deposit.operationId == operationId;
+    }
+
+    // Admin-only money-in record; the deposit document and its
+    // CREATE_CASH_DEPOSIT operation must be written in one transaction.
+    function validCashDepositCreate(storeId, depositId) {
+      let data = request.resource.data;
+
+      return isAdmin(storeId)
+        && depositId is string
+        && data.operationId == depositId
+        && validCashDepositCreateAfter(
+          storeId, depositId, data.operationId, request.auth.uid)
+        && validCompletedOperationAfter(
+          storeId, data.operationId, 'CREATE_CASH_DEPOSIT',
+          depositId, 'depositId');
+    }
+
+    // The opening balance is created once; it can only change through an
+    // explicit audited amendment (reason + paired AMEND operation).
+    function validOpeningBalanceCreate(storeId, docId) {
+      let data = request.resource.data;
+
+      return isAdmin(storeId)
+        && docId == 'openingBalance'
+        && validOpeningBalanceKeys(data)
+        && validOpeningBalanceAmount(data)
+        && data.createdAt == request.time
+        && data.createdBy == request.auth.uid
+        && data.operationId is string
+        && !data.keys().hasAny([
+          'amendedAt', 'amendedBy', 'amendedReason', 'lastOperationId'
+        ])
+        && validCompletedOperationAfter(
+          storeId, data.operationId, 'SET_OPENING_BALANCE',
+          'openingBalance', 'cashBoxId');
+    }
+
+    function validOpeningBalanceAmend(storeId, docId) {
+      let data = request.resource.data;
+
+      return isAdmin(storeId)
+        && docId == 'openingBalance'
+        && validOpeningBalanceKeys(data)
+        && data.diff(resource.data).affectedKeys().hasOnly([
+          'openingBalanceFils', 'amendedAt', 'amendedBy', 'amendedReason',
+          'lastOperationId'
+        ])
+        && validOpeningBalanceAmount(data)
+        && data.amendedAt == request.time
+        && data.amendedBy == request.auth.uid
+        && validCashReason(data.amendedReason)
+        && data.lastOperationId is string
+        && validCompletedOperationAfter(
+          storeId, data.lastOperationId, 'AMEND_OPENING_BALANCE',
+          'openingBalance', 'cashBoxId');
+    }
+
     function validCashWithdrawalCreate(storeId, withdrawalId) {
       let data = request.resource.data;
       return data.keys().hasAny(['invoiceId'])
@@ -1110,6 +1313,31 @@ service cloud.firestore {
         && payment.status == 'ACTIVE';
     }
 
+    // The automatic withdrawal created by a purchase invoice is reversed by
+    // flipping ONLY its status, and only inside the same batch that cancels
+    // the invoice itself (mirrors validSupplierPaymentWithdrawalCancel).
+    function validInvoiceWithdrawalCancel(storeId, withdrawalId) {
+      let invoiceId = resource.data.invoiceId;
+      let invoicePath = purchaseInvoicePath(storeId, invoiceId);
+      let invoiceBefore = get(invoicePath).data;
+      let invoiceAfter = getAfter(invoicePath).data;
+
+      return isAdmin(storeId)
+        && resource.data.type == 'PURCHASE_INVOICE'
+        && resource.data.status == 'ACTIVE'
+        && request.resource.data.status == 'CANCELLED'
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['status'])
+        && invoiceId is string
+        && withdrawalId == 'invoice_' + invoiceId
+        && exists(invoicePath)
+        && existsAfter(invoicePath)
+        && invoiceBefore.status == 'ACTIVE'
+        && invoiceAfter.status == 'CANCELLED'
+        && invoiceAfter.cancellationOperationId is string
+        && invoiceAfter.shopCashAmountFils == resource.data.amountFils;
+    }
+
     function validSupplierPaymentWithdrawalCancel(storeId) {
       let paymentId = resource.data.keys().hasAny(['supplierPaymentId'])
         ? resource.data.supplierPaymentId : '';
@@ -1155,10 +1383,12 @@ service cloud.firestore {
           resource.data.withdrawalId, 'withdrawalId');
     }
 
-    function validCashWithdrawalUpdate(storeId) {
-      return resource.data.keys().hasAny(['supplierPaymentId'])
-        ? validSupplierPaymentWithdrawalCancel(storeId)
-        : validManualWithdrawalCancel(storeId);
+    function validCashWithdrawalUpdate(storeId, withdrawalId) {
+      return resource.data.keys().hasAny(['invoiceId'])
+        ? validInvoiceWithdrawalCancel(storeId, withdrawalId)
+        : (resource.data.keys().hasAny(['supplierPaymentId'])
+          ? validSupplierPaymentWithdrawalCancel(storeId)
+          : validManualWithdrawalCancel(storeId));
     }
 
     function validInvoicePhotoMetadataCreate(storeId, invoiceId, photoId) {
@@ -1796,7 +2026,23 @@ service cloud.firestore {
       match /cashWithdrawals/{withdrawalId} {
         allow get, list: if isFinancialStoreMember(storeId);
         allow create: if validCashWithdrawalCreate(storeId, withdrawalId);
-        allow update: if validCashWithdrawalUpdate(storeId);
+        allow update: if validCashWithdrawalUpdate(storeId, withdrawalId);
+        allow delete: if false;
+      }
+
+      match /cashBox/{docId} {
+        // Every financial member may read the balance; only an admin may
+        // create the opening balance or amend it through the audited path.
+        allow get, list: if isFinancialStoreMember(storeId);
+        allow create: if validOpeningBalanceCreate(storeId, docId);
+        allow update: if validOpeningBalanceAmend(storeId, docId);
+        allow delete: if false;
+      }
+
+      match /cashDeposits/{depositId} {
+        allow get, list: if isFinancialStoreMember(storeId);
+        allow create: if validCashDepositCreate(storeId, depositId);
+        allow update: if false;
         allow delete: if false;
       }
 

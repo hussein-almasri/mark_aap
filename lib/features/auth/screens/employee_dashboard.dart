@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../data/models/user_model.dart';
+import '../../cashbox/cash_box_screen.dart';
 import '../../debts/screens/debt_management_screen.dart';
 import '../../products/screens/product_list_screen.dart';
 import '../../purchases/screens/purchase_invoice_list_screen.dart';
@@ -72,6 +73,19 @@ class EmployeeDashboard extends StatelessWidget {
               MaterialPageRoute(
                 builder: (_) => SupplierDebtListScreen(user: user),
               ),
+            ),
+          ),
+        ),
+        Card(
+          child: ListTile(
+            leading: const CircleAvatar(
+              child: Icon(Icons.savings_outlined),
+            ),
+            title: const Text('صندوق النقد'),
+            subtitle: const Text('عرض رصيد الصندوق وسجل الحركات'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push<void>(
+              MaterialPageRoute(builder: (_) => CashBoxScreen(user: user)),
             ),
           ),
         ),

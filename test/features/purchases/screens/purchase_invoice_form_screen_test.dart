@@ -81,6 +81,16 @@ class _FakeInvoiceRepository implements PurchaseInvoiceRepository {
     }
     return operationId;
   }
+
+  @override
+  Future<void> cancelInvoice({
+    required String storeId,
+    required String invoiceId,
+    required String operationId,
+    required String cancelledBy,
+    required String reason,
+  }) =>
+      throw UnimplementedError();
 }
 
 class _FakeCompanyRepository implements CompanyRepository {
