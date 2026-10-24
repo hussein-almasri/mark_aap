@@ -60,7 +60,11 @@ beforeEach(async () => {
   });
 });
 
-async function seedDebt(invoiceId, { original = 1000, remaining = original } = {}) {
+async function seedDebt(invoiceId, {
+  original = 1000,
+  remaining = original,
+  status = remaining === 0 ? 'PAID' : 'OPEN',
+} = {}) {
   await testEnv.withSecurityRulesDisabled(async (context) => {
     await setDoc(doc(context.firestore(), 'stores', storeId, 'supplierDebts', invoiceId), {
       invoiceId,
@@ -68,7 +72,7 @@ async function seedDebt(invoiceId, { original = 1000, remaining = original } = {
       companyName: 'Example Company',
       originalAmountFils: original,
       remainingAmountFils: remaining,
-      status: remaining === 0 ? 'PAID' : 'OPEN',
+      status,
       createdAt: new Date(),
       createdBy: adminUid,
       operationId: `invoice-${invoiceId}`,
@@ -175,7 +179,9 @@ async function cancelBatch(db, {
     batch.update(debtRef, {
       ...debtPatch,
       remainingAmountFils: restored,
-      status: restored === 0 ? 'PAID' : 'OPEN',
+      status: debt.status === 'CANCELLED'
+        ? 'CANCELLED'
+        : restored === 0 ? 'PAID' : 'OPEN',
       lastOperationId: operationId,
     });
     assert.equal(restored, debt.remainingAmountFils + allocationAmount);
@@ -267,6 +273,21 @@ test('recomputes debt balance from other active payments', async () => {
       .remainingAmountFils,
     800,
   );
+});
+
+test('keeps an already-cancelled debt cancelled when restoring its balance', async () => {
+  await seedDebt('inv-1', { remaining: 700, status: 'CANCELLED' });
+  await seedPayment('pay-1', {
+    allocations: [{ invoiceId: 'inv-1', amountFils: 300 }],
+  });
+  const db = testEnv.authenticatedContext(adminUid).firestore();
+
+  await startAndCancel(db, 'pay-1', 'cancel-debt-cancelled');
+
+  const debt = (await getDoc(doc(db, 'stores', storeId, 'supplierDebts', 'inv-1')))
+    .data();
+  assert.equal(debt.remainingAmountFils, 1000);
+  assert.equal(debt.status, 'CANCELLED');
 });
 
 test('outside-cash cancellation does not create or update a withdrawal', async () => {
