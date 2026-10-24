@@ -154,6 +154,7 @@ async function cancelBatch(db, {
   omitWithdrawal = false,
   paymentPatch = {},
   debtPatch = {},
+  verifyRestoration = true,
 }) {
   const paymentRef = doc(db, 'stores', storeId, 'supplierPayments', paymentId);
   const paymentSnapshot = await getDoc(paymentRef);
@@ -184,7 +185,9 @@ async function cancelBatch(db, {
         : restored === 0 ? 'PAID' : 'OPEN',
       lastOperationId: operationId,
     });
-    assert.equal(restored, debt.remainingAmountFils + allocationAmount);
+    if (verifyRestoration) {
+      assert.equal(restored, debt.remainingAmountFils + allocationAmount);
+    }
   }
 
   if (payment.source === 'SHOP_CASH' && !omitWithdrawal) {
@@ -364,16 +367,30 @@ test('rejects repeated cancellation and leaves the payment unchanged', async () 
   const db = testEnv.authenticatedContext(adminUid).firestore();
   await startAndCancel(db, 'pay-1', 'cancel-first');
   await startCancelOperation(db, 'cancel-second', 'pay-1');
+  const paymentRef = doc(db, 'stores', storeId, 'supplierPayments', 'pay-1');
+  const debtRef = doc(db, 'stores', storeId, 'supplierDebts', 'inv-1');
+  const withdrawalRef = doc(
+    db,
+    'stores',
+    storeId,
+    'cashWithdrawals',
+    'supplierPayment_pay-1',
+  );
+  const paymentBefore = (await getDoc(paymentRef)).data();
+  const debtBefore = (await getDoc(debtRef)).data();
+  const withdrawalBefore = (await getDoc(withdrawalRef)).data();
 
   await assert.rejects(
-    cancelBatch(db, { paymentId: 'pay-1', operationId: 'cancel-second' }),
+    cancelBatch(db, {
+      paymentId: 'pay-1',
+      operationId: 'cancel-second',
+      verifyRestoration: false,
+    }),
     (error) => error.code === 'permission-denied',
   );
-  assert.equal(
-    (await getDoc(doc(db, 'stores', storeId, 'supplierPayments', 'pay-1'))).data()
-      .cancellationOperationId,
-    'cancel-first',
-  );
+  assert.deepEqual((await getDoc(paymentRef)).data(), paymentBefore);
+  assert.deepEqual((await getDoc(debtRef)).data(), debtBefore);
+  assert.deepEqual((await getDoc(withdrawalRef)).data(), withdrawalBefore);
 });
 
 test('rejects allocation edits and debt metadata edits during cancellation', async () => {
