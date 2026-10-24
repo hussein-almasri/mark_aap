@@ -91,8 +91,15 @@ class _FakePaymentRepository implements SupplierPaymentRepository {
     String? notes,
     required String createdBy,
     required String operationId,
-  }) =>
-      throw UnimplementedError();
+  }) => throw UnimplementedError();
+
+  @override
+  Future<String> cancelPayment({
+    required String storeId,
+    required String paymentId,
+    required String reason,
+    required String cancelledBy,
+  }) => throw UnimplementedError();
 }
 
 class _FakeCompanyRepository implements CompanyRepository {
@@ -122,8 +129,7 @@ class _FakeCompanyRepository implements CompanyRepository {
     required String storeId,
     required String name,
     String? phone,
-  }) async =>
-      'company-x';
+  }) async => 'company-x';
 
   @override
   Future<void> updateCompany({
@@ -201,9 +207,7 @@ void main() {
     final companies = _FakeCompanyRepository([_activeCompany, _inactiveCompany])
       ..listError = null;
     // Hold the company list so the loading state is visible.
-    await tester.pumpWidget(
-      _screen(payments: payments, companies: companies),
-    );
+    await tester.pumpWidget(_screen(payments: payments, companies: companies));
     await tester.pumpAndSettle();
 
     expect(find.text('Active Supplier'), findsOneWidget);
@@ -216,9 +220,7 @@ void main() {
     // After the first failure the fake clears the error, so retry succeeds.
     final payments = _FakePaymentRepository();
 
-    await tester.pumpWidget(
-      _screen(payments: payments, companies: companies),
-    );
+    await tester.pumpWidget(_screen(payments: payments, companies: companies));
     await tester.pumpAndSettle();
     expect(find.text('تعذر تحميل قائمة الموردين.'), findsOneWidget);
 
@@ -244,22 +246,27 @@ void main() {
   testWidgets('selecting a company loads and shows its open debts', (
     tester,
   ) async {
-    final payments = _FakePaymentRepository(debts: [
-      _debt(
-        invoiceId: 'inv-1',
-        originalAmountFils: 100000,
-        remainingAmountFils: 40000,
-        createdAtMillis: 100,
-      ),
-      _debt(
-        invoiceId: 'inv-2',
-        originalAmountFils: 50000,
-        remainingAmountFils: 25000,
-        createdAtMillis: 200,
-      ),
-    ]);
+    final payments = _FakePaymentRepository(
+      debts: [
+        _debt(
+          invoiceId: 'inv-1',
+          originalAmountFils: 100000,
+          remainingAmountFils: 40000,
+          createdAtMillis: 100,
+        ),
+        _debt(
+          invoiceId: 'inv-2',
+          originalAmountFils: 50000,
+          remainingAmountFils: 25000,
+          createdAtMillis: 200,
+        ),
+      ],
+    );
     await tester.pumpWidget(
-      _screen(payments: payments, companies: _FakeCompanyRepository([_activeCompany])),
+      _screen(
+        payments: payments,
+        companies: _FakeCompanyRepository([_activeCompany]),
+      ),
     );
     await tester.pumpAndSettle();
 
@@ -283,7 +290,10 @@ void main() {
   ) async {
     final payments = _FakePaymentRepository(debts: []);
     await tester.pumpWidget(
-      _screen(payments: payments, companies: _FakeCompanyRepository([_activeCompany])),
+      _screen(
+        payments: payments,
+        companies: _FakeCompanyRepository([_activeCompany]),
+      ),
     );
     await tester.pumpAndSettle();
 
@@ -294,18 +304,23 @@ void main() {
   });
 
   testWidgets('shows a load error for debts and retries', (tester) async {
-    final payments = _FakePaymentRepository(debts: [
-      _debt(
-        invoiceId: 'inv-recovered',
-        originalAmountFils: 10000,
-        remainingAmountFils: 10000,
-      ),
-    ]);
+    final payments = _FakePaymentRepository(
+      debts: [
+        _debt(
+          invoiceId: 'inv-recovered',
+          originalAmountFils: 10000,
+          remainingAmountFils: 10000,
+        ),
+      ],
+    );
     // First debt load fails, then the fake clears the error so retry succeeds.
     payments.debtsError = StateError('temporary');
 
     await tester.pumpWidget(
-      _screen(payments: payments, companies: _FakeCompanyRepository([_activeCompany])),
+      _screen(
+        payments: payments,
+        companies: _FakeCompanyRepository([_activeCompany]),
+      ),
     );
     await tester.pumpAndSettle();
 
@@ -321,15 +336,20 @@ void main() {
   testWidgets('the back arrow clears the selection and returns to companies', (
     tester,
   ) async {
-    final payments = _FakePaymentRepository(debts: [
-      _debt(
-        invoiceId: 'inv-1',
-        originalAmountFils: 10000,
-        remainingAmountFils: 5000,
-      ),
-    ]);
+    final payments = _FakePaymentRepository(
+      debts: [
+        _debt(
+          invoiceId: 'inv-1',
+          originalAmountFils: 10000,
+          remainingAmountFils: 5000,
+        ),
+      ],
+    );
     await tester.pumpWidget(
-      _screen(payments: payments, companies: _FakeCompanyRepository([_activeCompany])),
+      _screen(
+        payments: payments,
+        companies: _FakeCompanyRepository([_activeCompany]),
+      ),
     );
     await tester.pumpAndSettle();
 

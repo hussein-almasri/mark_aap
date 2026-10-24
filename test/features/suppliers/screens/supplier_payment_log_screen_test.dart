@@ -58,8 +58,7 @@ class _FakePaymentRepository implements SupplierPaymentRepository {
   Future<List<SupplierDebtModel>> listOpenDebtsForCompany(
     String storeId,
     String companyId,
-  ) async =>
-      [];
+  ) async => [];
 
   @override
   Future<String> createPayment({
@@ -82,8 +81,15 @@ class _FakePaymentRepository implements SupplierPaymentRepository {
     String? notes,
     required String createdBy,
     required String operationId,
-  }) =>
-      throw UnimplementedError();
+  }) => throw UnimplementedError();
+
+  @override
+  Future<String> cancelPayment({
+    required String storeId,
+    required String paymentId,
+    required String reason,
+    required String cancelledBy,
+  }) => throw UnimplementedError();
 }
 
 const _user = UserModel(
@@ -142,15 +148,17 @@ void main() {
   testWidgets('lists payments newest first with amount, source and date', (
     tester,
   ) async {
-    final payments = _FakePaymentRepository(payments: [
-      _payment(paymentId: 'p-old', amountFils: 10000, createdAtMillis: 100),
-      _payment(
-        paymentId: 'p-new',
-        amountFils: 65000,
-        source: SupplierPaymentSource.outsideCash,
-        createdAtMillis: 900,
-      ),
-    ]);
+    final payments = _FakePaymentRepository(
+      payments: [
+        _payment(paymentId: 'p-old', amountFils: 10000, createdAtMillis: 100),
+        _payment(
+          paymentId: 'p-new',
+          amountFils: 65000,
+          source: SupplierPaymentSource.outsideCash,
+          createdAtMillis: 900,
+        ),
+      ],
+    );
     await _pump(tester, payments: payments);
 
     expect(find.text('سجل دفعات الموردين'), findsOneWidget);
@@ -165,30 +173,35 @@ void main() {
     expect(oldest, greaterThan(newest));
   });
 
-  testWidgets('shows a cancelled payment with its status label', (tester) async {
-    final payments = _FakePaymentRepository(payments: [
-      _payment(
-        paymentId: 'p-cancelled',
-        amountFils: 20000,
-        status: SupplierPaymentStatus.cancelled,
-      ),
-    ]);
+  testWidgets('shows a cancelled payment with its status label', (
+    tester,
+  ) async {
+    final payments = _FakePaymentRepository(
+      payments: [
+        _payment(
+          paymentId: 'p-cancelled',
+          amountFils: 20000,
+          status: SupplierPaymentStatus.cancelled,
+        ),
+      ],
+    );
     await _pump(tester, payments: payments);
 
     expect(find.text('ملغاة'), findsOneWidget);
   });
 
-  testWidgets('shows an empty state when there are no payments', (tester) async {
+  testWidgets('shows an empty state when there are no payments', (
+    tester,
+  ) async {
     await _pump(tester, payments: _FakePaymentRepository(payments: []));
 
     expect(find.text('لا توجد دفعات مسجلة بعد.'), findsOneWidget);
   });
 
   testWidgets('shows a load error and retries', (tester) async {
-    final payments = _FakePaymentRepository(payments: [
-      _payment(paymentId: 'p-1', amountFils: 30000),
-    ])
-      ..listError = StateError('temporary');
+    final payments = _FakePaymentRepository(
+      payments: [_payment(paymentId: 'p-1', amountFils: 30000)],
+    )..listError = StateError('temporary');
     await _pump(tester, payments: payments);
     expect(find.text('تعذر تحميل سجل دفعات الموردين.'), findsOneWidget);
 

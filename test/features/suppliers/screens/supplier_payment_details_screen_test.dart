@@ -13,6 +13,8 @@ class _FakePaymentRepository implements SupplierPaymentRepository {
 
   SupplierPaymentModel? payment;
   Object? getError;
+  final cancellationCalls = <({String reason, String cancelledBy})>[];
+  Object? cancellationError;
 
   @override
   CollectionReference<Map<String, dynamic>> supplierPayments(String storeId) =>
@@ -38,7 +40,10 @@ class _FakePaymentRepository implements SupplierPaymentRepository {
   String newOperationId(String storeId) => 'op-1';
 
   @override
-  Future<SupplierPaymentModel> getPayment(String storeId, String paymentId) async {
+  Future<SupplierPaymentModel> getPayment(
+    String storeId,
+    String paymentId,
+  ) async {
     if (getError case final error?) {
       getError = null;
       throw error;
@@ -59,8 +64,7 @@ class _FakePaymentRepository implements SupplierPaymentRepository {
   Future<List<SupplierDebtModel>> listOpenDebtsForCompany(
     String storeId,
     String companyId,
-  ) async =>
-      [];
+  ) async => [];
 
   @override
   Future<String> createPayment({
@@ -83,8 +87,31 @@ class _FakePaymentRepository implements SupplierPaymentRepository {
     String? notes,
     required String createdBy,
     required String operationId,
-  }) =>
-      throw UnimplementedError();
+  }) => throw UnimplementedError();
+
+  @override
+  Future<String> cancelPayment({
+    required String storeId,
+    required String paymentId,
+    required String reason,
+    required String cancelledBy,
+  }) async {
+    if (cancellationError case final error?) throw error;
+    cancellationCalls.add((reason: reason, cancelledBy: cancelledBy));
+    final current = payment!;
+    payment = SupplierPaymentModel.fromData(
+      paymentId: current.paymentId,
+      data: {
+        ...current.toData(),
+        'status': 'CANCELLED',
+        'cancelledAt': Timestamp.fromMillisecondsSinceEpoch(2000),
+        'cancelledBy': cancelledBy,
+        'cancellationReason': reason,
+        'cancellationOperationId': 'cancel-op-1',
+      },
+    );
+    return 'cancel-op-1';
+  }
 }
 
 const _user = UserModel(
@@ -93,6 +120,15 @@ const _user = UserModel(
   name: 'User',
   email: 'u@example.com',
   role: 'ADMIN',
+  isActive: true,
+);
+
+const _employee = UserModel(
+  uid: 'employee-1',
+  storeId: 'store-1',
+  name: 'Employee',
+  email: 'employee@example.com',
+  role: 'EMPLOYEE',
   isActive: true,
 );
 
@@ -132,11 +168,12 @@ SupplierPaymentModel _multiAllocationPayment({
 Future<void> _pump(
   WidgetTester tester, {
   required _FakePaymentRepository payments,
+  UserModel user = _user,
 }) async {
   await tester.pumpWidget(
     MaterialApp(
       home: SupplierPaymentDetailsScreen(
-        user: _user,
+        user: user,
         paymentId: 'p-1',
         repository: payments,
       ),
@@ -170,7 +207,10 @@ void main() {
       payments: _FakePaymentRepository(payment: _multiAllocationPayment()),
     );
 
-    expect(find.textContaining('توزيع الدفعة على الفواتير (3)'), findsOneWidget);
+    expect(
+      find.textContaining('توزيع الدفعة على الفواتير (3)'),
+      findsOneWidget,
+    );
     expect(find.text('فاتورة inv-1'), findsOneWidget);
     expect(find.text('40.00 د.أ'), findsOneWidget);
     expect(find.text('فاتورة inv-2'), findsOneWidget);
@@ -203,6 +243,39 @@ void main() {
 
     expect(find.text('ملاحظات'), findsOneWidget);
     expect(find.text('دفعة دورية'), findsOneWidget);
+  });
+
+  testWidgets('admin can cancel an active payment with a required reason', (
+    tester,
+  ) async {
+    final payments = _FakePaymentRepository(payment: _multiAllocationPayment());
+    await _pump(tester, payments: payments);
+
+    await tester.tap(find.text('إلغاء الدفعة'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('تأكيد الإلغاء'));
+    await tester.pumpAndSettle();
+    expect(find.text('أدخل سبب الإلغاء'), findsOneWidget);
+
+    await tester.enterText(find.byType(TextFormField), ' تصحيح إدخال ');
+    await tester.tap(find.text('تأكيد الإلغاء'));
+    await tester.pumpAndSettle();
+
+    expect(payments.cancellationCalls, [
+      (reason: 'تصحيح إدخال', cancelledBy: 'u1'),
+    ]);
+    expect(find.text('ملغاة'), findsOneWidget);
+    expect(find.text('سبب الإلغاء: تصحيح إدخال'), findsOneWidget);
+  });
+
+  testWidgets('employee does not see the cancel action', (tester) async {
+    await _pump(
+      tester,
+      payments: _FakePaymentRepository(payment: _multiAllocationPayment()),
+      user: _employee,
+    );
+
+    expect(find.text('إلغاء الدفعة'), findsNothing);
   });
 
   testWidgets('shows a load error and retries', (tester) async {

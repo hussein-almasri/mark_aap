@@ -980,7 +980,10 @@ service cloud.firestore {
         && debtAfter.companyId == data.companyId
         && debtAfter.companyName == data.companyName
         && debtAfter.remainingAmountFils == debtBefore.remainingAmountFils + amountFils
-        && debtAfter.status == (debtAfter.remainingAmountFils == 0 ? 'PAID' : 'OPEN')
+        && debtAfter.status
+          == (debtBefore.status == 'CANCELLED'
+            ? 'CANCELLED'
+            : (debtAfter.remainingAmountFils == 0 ? 'PAID' : 'OPEN'))
         && debtAfter.lastOperationId == data.cancellationOperationId;
     }
 

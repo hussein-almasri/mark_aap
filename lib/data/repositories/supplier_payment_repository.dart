@@ -468,6 +468,243 @@ class SupplierPaymentRepository {
     return operationId;
   }
 
+  /// Cancels an active payment and restores its debt allocations atomically.
+  ///
+  /// Active allocations are queried per debt so the restoration is calculated
+  /// from the original debt amount rather than inferred from a blind increment.
+  /// The transaction verifies that those totals still match the debt documents;
+  /// Firestore rules then enforce that only cancellation fields and balances
+  /// change, while preserving the original allocation record.
+  Future<String> cancelPayment({
+    required String storeId,
+    required String paymentId,
+    required String reason,
+    required String cancelledBy,
+  }) async {
+    final normalizedReason = reason.trim();
+    if (normalizedReason.isEmpty || normalizedReason.length > 500) {
+      throw ArgumentError.value(
+        reason,
+        'reason',
+        'Must be non-empty and at most 500 characters.',
+      );
+    }
+    if (cancelledBy.trim().isEmpty) {
+      throw ArgumentError.value(
+        cancelledBy,
+        'cancelledBy',
+        'Must not be empty.',
+      );
+    }
+
+    final payment = await getPayment(storeId, paymentId);
+    if (payment.status != SupplierPaymentStatus.active) {
+      throw StateError('Supplier payment is already cancelled.');
+    }
+
+    final allocations = _paymentAllocations(payment);
+    final debtRestorations = await Future.wait(
+      allocations.map((allocation) async {
+        final debtSnapshot = await supplierDebts(
+          storeId,
+        ).doc(allocation.invoiceId).get();
+        if (!debtSnapshot.exists) {
+          throw StateError(
+            'Supplier debt not found for invoice ${allocation.invoiceId}.',
+          );
+        }
+        final debt = SupplierDebtModel.fromDocument(debtSnapshot);
+        final activeAllocatedFils = await _activeAllocationsForDebt(
+          storeId,
+          allocation.invoiceId,
+        );
+        if (activeAllocatedFils > debt.originalAmountFils) {
+          throw StateError(
+            'Active supplier allocations exceed the original debt.',
+          );
+        }
+        final calculatedRemaining =
+            debt.originalAmountFils - activeAllocatedFils;
+        if (calculatedRemaining != debt.remainingAmountFils) {
+          throw StateError(
+            'Supplier debt balance does not match its active payment allocations.',
+          );
+        }
+        final restoredFils = calculatedRemaining + allocation.amountFils;
+        return (
+          invoiceId: allocation.invoiceId,
+          currentFils: calculatedRemaining,
+          restoredFils: restoredFils,
+          restoredStatus: debt.status == SupplierDebtStatus.cancelled
+              ? SupplierDebtStatus.cancelled.value
+              : restoredFils == 0
+              ? SupplierDebtStatus.paid.value
+              : SupplierDebtStatus.open.value,
+        );
+      }),
+    );
+
+    final cancellationOperationId = newOperationId(storeId);
+    final operationRef = operations(storeId).doc(cancellationOperationId);
+    await operationRef.set({
+      'operationId': cancellationOperationId,
+      'type': 'CANCEL_SUPPLIER_PAYMENT',
+      'createdBy': cancelledBy,
+      'createdAt': FieldValue.serverTimestamp(),
+      'status': 'PROCESSING',
+      'retryCount': 0,
+      'paymentId': paymentId,
+    });
+
+    final paymentRef = supplierPayments(storeId).doc(paymentId);
+    final withdrawalRef = payment.source == SupplierPaymentSource.shopCash
+        ? cashWithdrawals(storeId).doc('supplierPayment_$paymentId')
+        : null;
+
+    await _firestore.runTransaction((transaction) async {
+      final operationSnapshot = await transaction.get(operationRef);
+      final paymentSnapshot = await transaction.get(paymentRef);
+      if (!operationSnapshot.exists ||
+          operationSnapshot.data()?['status'] != 'PROCESSING' ||
+          !paymentSnapshot.exists) {
+        throw StateError(
+          'Supplier payment cancellation could not be completed.',
+        );
+      }
+      final currentPayment = SupplierPaymentModel.fromDocument(paymentSnapshot);
+      if (currentPayment.status != SupplierPaymentStatus.active ||
+          currentPayment.operationId != paymentId ||
+          currentPayment.source != payment.source) {
+        throw StateError('Supplier payment is no longer active.');
+      }
+
+      final debtSnapshots = <DocumentSnapshot<Map<String, dynamic>>>[];
+      for (final restoration in debtRestorations) {
+        debtSnapshots.add(
+          await transaction.get(
+            supplierDebts(storeId).doc(restoration.invoiceId),
+          ),
+        );
+      }
+
+      DocumentSnapshot<Map<String, dynamic>>? withdrawalSnapshot;
+      if (withdrawalRef != null) {
+        withdrawalSnapshot = await transaction.get(withdrawalRef);
+        if (!withdrawalSnapshot.exists ||
+            withdrawalSnapshot.data()?['status'] != 'ACTIVE' ||
+            withdrawalSnapshot.data()?['supplierPaymentId'] != paymentId) {
+          throw StateError(
+            'The supplier payment cash withdrawal is unavailable.',
+          );
+        }
+      }
+
+      for (var index = 0; index < debtRestorations.length; index++) {
+        final restoration = debtRestorations[index];
+        final debtSnapshot = debtSnapshots[index];
+        if (!debtSnapshot.exists ||
+            debtSnapshot.data()?['remainingAmountFils'] !=
+                restoration.currentFils) {
+          throw StateError(
+            'Supplier debt changed while the cancellation was being prepared.',
+          );
+        }
+      }
+
+      transaction.update(paymentRef, {
+        'status': 'CANCELLED',
+        'cancelledAt': FieldValue.serverTimestamp(),
+        'cancelledBy': cancelledBy,
+        'cancellationReason': normalizedReason,
+        'cancellationOperationId': cancellationOperationId,
+      });
+
+      for (var index = 0; index < debtRestorations.length; index++) {
+        final restoration = debtRestorations[index];
+        transaction.update(supplierDebts(storeId).doc(restoration.invoiceId), {
+          'remainingAmountFils': restoration.restoredFils,
+          'status': restoration.restoredStatus,
+          'lastOperationId': cancellationOperationId,
+        });
+      }
+
+      if (withdrawalRef != null) {
+        transaction.update(withdrawalRef, {'status': 'CANCELLED'});
+      }
+      transaction.update(operationRef, {'status': 'COMPLETED'});
+    });
+
+    return cancellationOperationId;
+  }
+
+  Future<int> _activeAllocationsForDebt(
+    String storeId,
+    String invoiceId,
+  ) async {
+    final seenPayments = <String>{};
+    var totalFils = 0;
+    final paymentSlots = await Future.wait(
+      List.generate(
+        5,
+        (index) => supplierPayments(
+          storeId,
+        ).where('allocation${index + 1}InvoiceId', isEqualTo: invoiceId).get(),
+      ),
+    );
+    for (var index = 0; index < paymentSlots.length; index++) {
+      for (final document in paymentSlots[index].docs) {
+        final payment = SupplierPaymentModel.fromDocument(document);
+        if (!seenPayments.add(payment.paymentId)) {
+          throw StateError(
+            'Supplier payment contains duplicate debt allocations.',
+          );
+        }
+        if (payment.status != SupplierPaymentStatus.active) continue;
+        final amount = switch (index + 1) {
+          1 => payment.allocation1AmountFils,
+          2 => payment.allocation2AmountFils,
+          3 => payment.allocation3AmountFils,
+          4 => payment.allocation4AmountFils,
+          _ => payment.allocation5AmountFils,
+        };
+        if (amount == null) {
+          throw FormatException('Supplier payment allocation is incomplete.');
+        }
+        totalFils += amount;
+      }
+    }
+    return totalFils;
+  }
+
+  List<({String invoiceId, int amountFils})> _paymentAllocations(
+    SupplierPaymentModel payment,
+  ) => [
+    (
+      invoiceId: payment.allocation1InvoiceId,
+      amountFils: payment.allocation1AmountFils,
+    ),
+    if (payment.allocation2InvoiceId != null)
+      (
+        invoiceId: payment.allocation2InvoiceId!,
+        amountFils: payment.allocation2AmountFils!,
+      ),
+    if (payment.allocation3InvoiceId != null)
+      (
+        invoiceId: payment.allocation3InvoiceId!,
+        amountFils: payment.allocation3AmountFils!,
+      ),
+    if (payment.allocation4InvoiceId != null)
+      (
+        invoiceId: payment.allocation4InvoiceId!,
+        amountFils: payment.allocation4AmountFils!,
+      ),
+    if (payment.allocation5InvoiceId != null)
+      (
+        invoiceId: payment.allocation5InvoiceId!,
+        amountFils: payment.allocation5AmountFils!,
+      ),
+  ].take(payment.allocationCount).toList();
+
   /// Re-reads the phase-2 documents and returns the first precondition that no
   /// longer holds, or `null` when every precondition still holds.
   ///

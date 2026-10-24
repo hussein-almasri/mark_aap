@@ -7,13 +7,10 @@ import '../../../data/models/supplier_payment_model.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/repositories/supplier_payment_repository.dart';
 
-/// Read-only detail view of one supplier payment.
+/// Detail view of one supplier payment, with admin cancellation when active.
 ///
 /// Shows the payment amount, the source, status and date, and how the amount
 /// was allocated across up to 5 invoices (invoice id + per-allocation amount).
-/// Deliberately has **no** cancel button: the cancellation path is not built or
-/// tested yet, so exposing it here would offer an action the rules and
-/// repository cannot yet back.
 class SupplierPaymentDetailsScreen extends StatefulWidget {
   const SupplierPaymentDetailsScreen({
     required this.user,
@@ -38,7 +35,9 @@ class _SupplierPaymentDetailsScreenState
 
   SupplierPaymentModel? _payment;
   bool _isLoading = true;
+  bool _isCancelling = false;
   String? _loadError;
+  String? _cancelError;
 
   @override
   void initState() {
@@ -88,6 +87,105 @@ class _SupplierPaymentDetailsScreenState
     return 'تعذر تحميل الدفعة. حاول مرة أخرى';
   }
 
+  String _describeCancellationError(Object error) {
+    if (error is ArgumentError) {
+      return 'سبب الإلغاء مطلوب وبحد أقصى 500 حرف';
+    }
+    final text = error.toString().toLowerCase();
+    if (text.contains('permission') || text.contains('insufficient')) {
+      return 'لا تملك صلاحية إلغاء هذه الدفعة';
+    }
+    if (text.contains('already cancelled') ||
+        text.contains('no longer active')) {
+      return 'الدفعة ملغاة مسبقًا ولا يمكن إلغاؤها مرة أخرى';
+    }
+    if (text.contains('not found')) {
+      return 'الدفعة أو أحد ديونها غير موجود';
+    }
+    if (text.contains('changed while') ||
+        text.contains('does not match') ||
+        text.contains('exceed')) {
+      return 'تغير رصيد الدين أو لا يتطابق مع الدفعات الفعّالة؛ أعد تحميل الصفحة';
+    }
+    if (text.contains('unavailable') ||
+        text.contains('network') ||
+        text.contains('timeout')) {
+      return 'تعذر الاتصال بالخادم. تحقق من اتصال الإنترنت';
+    }
+    return 'تعذر إلغاء الدفعة. لم يتم تأكيد العملية';
+  }
+
+  Future<void> _requestCancellation() async {
+    if (!widget.user.isAdmin || _isCancelling) return;
+    final formKey = GlobalKey<FormState>();
+    var reasonValue = '';
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('إلغاء دفعة المورد'),
+        content: Form(
+          key: formKey,
+          child: TextFormField(
+            autofocus: true,
+            maxLength: 500,
+            maxLines: 3,
+            onSaved: (value) => reasonValue = value?.trim() ?? '',
+            decoration: const InputDecoration(
+              labelText: 'سبب الإلغاء',
+              border: OutlineInputBorder(),
+            ),
+            validator: (value) {
+              if (value == null || value.trim().isEmpty) {
+                return 'أدخل سبب الإلغاء';
+              }
+              return null;
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('رجوع'),
+          ),
+          FilledButton(
+            onPressed: () {
+              if (formKey.currentState!.validate()) {
+                formKey.currentState!.save();
+                Navigator.of(dialogContext).pop(reasonValue);
+              }
+            },
+            child: const Text('تأكيد الإلغاء'),
+          ),
+        ],
+      ),
+    );
+    if (reason == null || !mounted) return;
+
+    setState(() {
+      _isCancelling = true;
+      _cancelError = null;
+    });
+    try {
+      await _repository.cancelPayment(
+        storeId: widget.user.storeId,
+        paymentId: widget.paymentId,
+        reason: reason,
+        cancelledBy: widget.user.uid,
+      );
+      await _loadPayment();
+      if (mounted && _loadError == null) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('تم إلغاء الدفعة بنجاح')));
+      }
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _cancelError = _describeCancellationError(error));
+    } finally {
+      if (mounted) setState(() => _isCancelling = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -127,6 +225,32 @@ class _SupplierPaymentDetailsScreenState
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _buildHeaderCard(payment, isActive),
+          if (widget.user.isAdmin && isActive) ...[
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _isCancelling ? null : _requestCancellation,
+                icon: _isCancelling
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.cancel_outlined),
+                label: Text(
+                  _isCancelling ? 'جارٍ إلغاء الدفعة...' : 'إلغاء الدفعة',
+                ),
+              ),
+            ),
+          ],
+          if (_cancelError != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              _cancelError!,
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
+          ],
           const SizedBox(height: 16),
           _buildAllocationCard(payment),
           if (payment.notes != null && payment.notes!.isNotEmpty) ...[
@@ -171,11 +295,31 @@ class _SupplierPaymentDetailsScreenState
             Icons.payments_outlined,
             'المبلغ: ${PriceAmount.formatJod2(payment.amountFils)}',
           ),
-          _infoRow(Icons.account_balance_outlined, 'المصدر: ${_sourceLabel(payment.source)}'),
+          _infoRow(
+            Icons.account_balance_outlined,
+            'المصدر: ${_sourceLabel(payment.source)}',
+          ),
           _infoRow(
             Icons.calendar_today_outlined,
             'التاريخ: ${_formatDate(payment.createdAt)}',
           ),
+          if (!isActive) ...[
+            if (payment.cancelledAt != null)
+              _infoRow(
+                Icons.event_busy_outlined,
+                'تاريخ الإلغاء: ${_formatDate(payment.cancelledAt!)}',
+              ),
+            if (payment.cancelledBy != null)
+              _infoRow(
+                Icons.person_outline,
+                'ألغى الدفعة: ${payment.cancelledBy}',
+              ),
+            if (payment.cancellationReason != null)
+              _infoRow(
+                Icons.info_outline,
+                'سبب الإلغاء: ${payment.cancellationReason}',
+              ),
+          ],
         ],
       ),
     ),
@@ -196,7 +340,11 @@ class _SupplierPaymentDetailsScreenState
             const Divider(),
             ...allocations.map(_buildAllocationRow),
             const Divider(),
-            _amountRow('إجمالي المخصص', payment.allocationTotalFils, bold: true),
+            _amountRow(
+              'إجمالي المخصص',
+              payment.allocationTotalFils,
+              bold: true,
+            ),
           ],
         ),
       ),
@@ -211,7 +359,10 @@ class _SupplierPaymentDetailsScreenState
     SupplierPaymentModel payment,
   ) {
     final all = [
-      (invoiceId: payment.allocation1InvoiceId, amountFils: payment.allocation1AmountFils),
+      (
+        invoiceId: payment.allocation1InvoiceId,
+        amountFils: payment.allocation1AmountFils,
+      ),
       if (payment.allocation2InvoiceId != null)
         (
           invoiceId: payment.allocation2InvoiceId!,

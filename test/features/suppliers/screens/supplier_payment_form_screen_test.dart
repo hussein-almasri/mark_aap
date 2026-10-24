@@ -44,7 +44,8 @@ class _FakePaymentRepository implements SupplierPaymentRepository {
   int newIdCalls = 0;
   final createCalls = <_CreatePaymentCall>[];
   Object? createError;
-  SupplierPaymentSaveStage createStage = SupplierPaymentSaveStage.paymentTransaction;
+  SupplierPaymentSaveStage createStage =
+      SupplierPaymentSaveStage.paymentTransaction;
   SupplierPaymentConflictReason? createConflict;
   Completer<void>? createGate;
   bool throwAlreadyExists = false;
@@ -159,6 +160,14 @@ class _FakePaymentRepository implements SupplierPaymentRepository {
     }
     return operationId;
   }
+
+  @override
+  Future<String> cancelPayment({
+    required String storeId,
+    required String paymentId,
+    required String reason,
+    required String cancelledBy,
+  }) => throw UnimplementedError();
 }
 
 /// Read-only fake for the invoice documents that carry the optional supplier
@@ -226,8 +235,7 @@ class _FakeInvoiceRepository implements PurchaseInvoiceRepository {
     required List<String> photoIds,
     required String createdBy,
     required String operationId,
-  }) =>
-      throw UnimplementedError();
+  }) => throw UnimplementedError();
 
   @override
   Future<void> cancelInvoice({
@@ -236,8 +244,7 @@ class _FakeInvoiceRepository implements PurchaseInvoiceRepository {
     required String operationId,
     required String cancelledBy,
     required String reason,
-  }) =>
-      throw UnimplementedError();
+  }) => throw UnimplementedError();
 }
 
 PurchaseInvoiceModel _invoice({
@@ -365,19 +372,28 @@ Future<void> _tapSave(WidgetTester tester) async {
   await tester.pump();
 }
 
-String _dateOf(int millis) =>
-    DateFormat('dd/MM/yyyy - HH:mm').format(
-      Timestamp.fromMillisecondsSinceEpoch(millis).toDate(),
-    );
+String _dateOf(int millis) => DateFormat(
+  'dd/MM/yyyy - HH:mm',
+).format(Timestamp.fromMillisecondsSinceEpoch(millis).toDate());
 
 void main() {
   testWidgets('lists open debts as selectable options without raw ids', (
     tester,
   ) async {
-    final payments = _FakePaymentRepository(debts: [
-      _debt(invoiceId: 'inv-1', remainingAmountFils: 40000, createdAtMillis: 100),
-      _debt(invoiceId: 'inv-2', remainingAmountFils: 25000, createdAtMillis: 3600000),
-    ]);
+    final payments = _FakePaymentRepository(
+      debts: [
+        _debt(
+          invoiceId: 'inv-1',
+          remainingAmountFils: 40000,
+          createdAtMillis: 100,
+        ),
+        _debt(
+          invoiceId: 'inv-2',
+          remainingAmountFils: 25000,
+          createdAtMillis: 3600000,
+        ),
+      ],
+    );
     await _pump(tester, payments: payments);
 
     expect(find.text('دفعة إلى Supplier'), findsOneWidget);
@@ -400,9 +416,9 @@ void main() {
   testWidgets('shows the supplier invoice number when it exists', (
     tester,
   ) async {
-    final payments = _FakePaymentRepository(debts: [
-      _debt(invoiceId: 'inv-1', remainingAmountFils: 40000),
-    ]);
+    final payments = _FakePaymentRepository(
+      debts: [_debt(invoiceId: 'inv-1', remainingAmountFils: 40000)],
+    );
     await _pump(
       tester,
       payments: payments,
@@ -413,33 +429,44 @@ void main() {
     expect(find.text('فاتورة بدون رقم'), findsNothing);
   });
 
-  testWidgets('saves an invoice without a supplier number using its internal id', (
-    tester,
-  ) async {
-    final payments = _FakePaymentRepository(debts: [
-      _debt(invoiceId: 'inv-1', remainingAmountFils: 40000),
-    ]);
-    await _pump(tester, payments: payments);
+  testWidgets(
+    'saves an invoice without a supplier number using its internal id',
+    (tester) async {
+      final payments = _FakePaymentRepository(
+        debts: [_debt(invoiceId: 'inv-1', remainingAmountFils: 40000)],
+      );
+      await _pump(tester, payments: payments);
 
-    expect(find.text('فاتورة بدون رقم'), findsOneWidget);
-    await _fill(tester, amount: '40.00', allocations: {0: '40.00'});
-    await _tapSave(tester);
-    await tester.pumpAndSettle();
+      expect(find.text('فاتورة بدون رقم'), findsOneWidget);
+      await _fill(tester, amount: '40.00', allocations: {0: '40.00'});
+      await _tapSave(tester);
+      await tester.pumpAndSettle();
 
-    expect(payments.createCalls, hasLength(1));
-    final call = payments.createCalls.single;
-    expect(call.allocationCount, 1);
-    expect(call.allocationInvoiceIds[0], 'inv-1');
-    expect(call.allocationAmountFils[0], 40000);
-  });
+      expect(payments.createCalls, hasLength(1));
+      final call = payments.createCalls.single;
+      expect(call.allocationCount, 1);
+      expect(call.allocationInvoiceIds[0], 'inv-1');
+      expect(call.allocationAmountFils[0], 40000);
+    },
+  );
 
   testWidgets('saves two invoices that have no supplier numbers', (
     tester,
   ) async {
-    final payments = _FakePaymentRepository(debts: [
-      _debt(invoiceId: 'inv-a', remainingAmountFils: 40000, createdAtMillis: 100),
-      _debt(invoiceId: 'inv-b', remainingAmountFils: 25000, createdAtMillis: 900),
-    ]);
+    final payments = _FakePaymentRepository(
+      debts: [
+        _debt(
+          invoiceId: 'inv-a',
+          remainingAmountFils: 40000,
+          createdAtMillis: 100,
+        ),
+        _debt(
+          invoiceId: 'inv-b',
+          remainingAmountFils: 25000,
+          createdAtMillis: 900,
+        ),
+      ],
+    );
     await _pump(tester, payments: payments);
 
     // Two invoices, both without a number, distinguished by date and balance.
@@ -463,9 +490,9 @@ void main() {
   testWidgets('uses internal invoice ids even when a supplier number exists', (
     tester,
   ) async {
-    final payments = _FakePaymentRepository(debts: [
-      _debt(invoiceId: 'inv-1', remainingAmountFils: 40000),
-    ]);
+    final payments = _FakePaymentRepository(
+      debts: [_debt(invoiceId: 'inv-1', remainingAmountFils: 40000)],
+    );
     await _pump(
       tester,
       payments: payments,
@@ -489,10 +516,9 @@ void main() {
   });
 
   testWidgets('shows a load error and retries', (tester) async {
-    final payments = _FakePaymentRepository(debts: [
-      _debt(invoiceId: 'inv-1', remainingAmountFils: 40000),
-    ])
-      ..debtsError = StateError('temporary');
+    final payments = _FakePaymentRepository(
+      debts: [_debt(invoiceId: 'inv-1', remainingAmountFils: 40000)],
+    )..debtsError = StateError('temporary');
     await _pump(tester, payments: payments);
     expect(find.text('تعذر تحميل ديون المورد.'), findsOneWidget);
 
@@ -504,17 +530,19 @@ void main() {
   testWidgets('shows live payment, allocated and remaining totals', (
     tester,
   ) async {
-    final payments = _FakePaymentRepository(debts: [
-      _debt(invoiceId: 'inv-1', remainingAmountFils: 40000),
-      _debt(invoiceId: 'inv-2', remainingAmountFils: 25000, createdAtMillis: 200),
-    ]);
+    final payments = _FakePaymentRepository(
+      debts: [
+        _debt(invoiceId: 'inv-1', remainingAmountFils: 40000),
+        _debt(
+          invoiceId: 'inv-2',
+          remainingAmountFils: 25000,
+          createdAtMillis: 200,
+        ),
+      ],
+    );
     await _pump(tester, payments: payments);
 
-    await _fill(
-      tester,
-      amount: '65.00',
-      allocations: {0: '40.00', 1: '25.00'},
-    );
+    await _fill(tester, amount: '65.00', allocations: {0: '40.00', 1: '25.00'});
 
     // The total payment amount is distinct from the per-invoice allocated
     // amount, and the caption spells out how the two relate.
@@ -534,17 +562,19 @@ void main() {
   testWidgets('blocks save when allocations do not sum to the amount', (
     tester,
   ) async {
-    final payments = _FakePaymentRepository(debts: [
-      _debt(invoiceId: 'inv-1', remainingAmountFils: 40000),
-      _debt(invoiceId: 'inv-2', remainingAmountFils: 25000, createdAtMillis: 200),
-    ]);
+    final payments = _FakePaymentRepository(
+      debts: [
+        _debt(invoiceId: 'inv-1', remainingAmountFils: 40000),
+        _debt(
+          invoiceId: 'inv-2',
+          remainingAmountFils: 25000,
+          createdAtMillis: 200,
+        ),
+      ],
+    );
     await _pump(tester, payments: payments);
 
-    await _fill(
-      tester,
-      amount: '65.00',
-      allocations: {0: '40.00', 1: '20.00'},
-    );
+    await _fill(tester, amount: '65.00', allocations: {0: '40.00', 1: '20.00'});
     await _tapSave(tester);
     await tester.pumpAndSettle();
 
@@ -554,9 +584,9 @@ void main() {
   testWidgets('blocks save when an allocation exceeds the balance', (
     tester,
   ) async {
-    final payments = _FakePaymentRepository(debts: [
-      _debt(invoiceId: 'inv-1', remainingAmountFils: 40000),
-    ]);
+    final payments = _FakePaymentRepository(
+      debts: [_debt(invoiceId: 'inv-1', remainingAmountFils: 40000)],
+    );
     await _pump(tester, payments: payments);
 
     await _fill(tester, amount: '45.00', allocations: {0: '45.00'});
@@ -567,9 +597,9 @@ void main() {
   });
 
   testWidgets('blocks save when nothing is selected', (tester) async {
-    final payments = _FakePaymentRepository(debts: [
-      _debt(invoiceId: 'inv-1', remainingAmountFils: 40000),
-    ]);
+    final payments = _FakePaymentRepository(
+      debts: [_debt(invoiceId: 'inv-1', remainingAmountFils: 40000)],
+    );
     await _pump(tester, payments: payments);
 
     await tester.enterText(
@@ -604,7 +634,10 @@ void main() {
     await _selectAt(tester, 5);
     await tester.pumpAndSettle();
 
-    expect(find.text('الحد الأقصى 5 فواتير في الدفعة الواحدة.'), findsOneWidget);
+    expect(
+      find.text('الحد الأقصى 5 فواتير في الدفعة الواحدة.'),
+      findsOneWidget,
+    );
     final tiles = tester
         .widgetList<CheckboxListTile>(find.byType(CheckboxListTile))
         .toList();
@@ -615,9 +648,9 @@ void main() {
   testWidgets('saves a single-invoice payment with the exact arguments', (
     tester,
   ) async {
-    final payments = _FakePaymentRepository(debts: [
-      _debt(invoiceId: 'inv-1', remainingAmountFils: 40000),
-    ]);
+    final payments = _FakePaymentRepository(
+      debts: [_debt(invoiceId: 'inv-1', remainingAmountFils: 40000)],
+    );
     await _pump(tester, payments: payments);
 
     await _fill(tester, amount: '40.00', allocations: {0: '40.00'});
@@ -640,19 +673,25 @@ void main() {
   testWidgets('saves a multi-invoice payment mapping allocations to slots', (
     tester,
   ) async {
-    final payments = _FakePaymentRepository(debts: [
-      _debt(invoiceId: 'inv-1', remainingAmountFils: 40000),
-      _debt(invoiceId: 'inv-2', remainingAmountFils: 25000, createdAtMillis: 200),
-      _debt(invoiceId: 'inv-3', remainingAmountFils: 10000, createdAtMillis: 300),
-    ]);
+    final payments = _FakePaymentRepository(
+      debts: [
+        _debt(invoiceId: 'inv-1', remainingAmountFils: 40000),
+        _debt(
+          invoiceId: 'inv-2',
+          remainingAmountFils: 25000,
+          createdAtMillis: 200,
+        ),
+        _debt(
+          invoiceId: 'inv-3',
+          remainingAmountFils: 10000,
+          createdAtMillis: 300,
+        ),
+      ],
+    );
     await _pump(tester, payments: payments);
 
     // Leave the middle invoice unselected to check slot packing.
-    await _fill(
-      tester,
-      amount: '50.00',
-      allocations: {0: '40.00', 2: '10.00'},
-    );
+    await _fill(tester, amount: '50.00', allocations: {0: '40.00', 2: '10.00'});
     await _tapSave(tester);
     await tester.pumpAndSettle();
 
@@ -668,9 +707,9 @@ void main() {
   });
 
   testWidgets('uses outside cash when the source is switched', (tester) async {
-    final payments = _FakePaymentRepository(debts: [
-      _debt(invoiceId: 'inv-1', remainingAmountFils: 40000),
-    ]);
+    final payments = _FakePaymentRepository(
+      debts: [_debt(invoiceId: 'inv-1', remainingAmountFils: 40000)],
+    );
     await _pump(tester, payments: payments);
 
     await _fill(tester, amount: '40.00', allocations: {0: '40.00'});
@@ -688,16 +727,17 @@ void main() {
   testWidgets('shows a failure snackbar and allows retry after an error', (
     tester,
   ) async {
-    final payments = _FakePaymentRepository(debts: [
-      _debt(invoiceId: 'inv-1', remainingAmountFils: 40000),
-    ])
-      // A genuinely transient failure, which is the only case that may mention
-      // the connection.
-      ..createError = FirebaseException(
-        plugin: 'cloud_firestore',
-        code: 'unavailable',
-        message: 'client is offline',
-      );
+    final payments =
+        _FakePaymentRepository(
+            debts: [_debt(invoiceId: 'inv-1', remainingAmountFils: 40000)],
+          )
+          // A genuinely transient failure, which is the only case that may mention
+          // the connection.
+          ..createError = FirebaseException(
+            plugin: 'cloud_firestore',
+            code: 'unavailable',
+            message: 'client is offline',
+          );
     await _pump(tester, payments: payments);
 
     await _fill(tester, amount: '40.00', allocations: {0: '40.00'});
@@ -727,16 +767,17 @@ void main() {
   testWidgets('shows a permission message instead of a connection message', (
     tester,
   ) async {
-    final payments = _FakePaymentRepository(debts: [
-      _debt(invoiceId: 'inv-1', remainingAmountFils: 40000),
-    ])
-      // Firestore rules rejected the write: the user is not a financial store
-      // member. Blaming the connection here would hide the real cause.
-      ..createError = FirebaseException(
-        plugin: 'cloud_firestore',
-        code: 'permission-denied',
-        message: 'Missing or insufficient permissions.',
-      );
+    final payments =
+        _FakePaymentRepository(
+            debts: [_debt(invoiceId: 'inv-1', remainingAmountFils: 40000)],
+          )
+          // Firestore rules rejected the write: the user is not a financial store
+          // member. Blaming the connection here would hide the real cause.
+          ..createError = FirebaseException(
+            plugin: 'cloud_firestore',
+            code: 'permission-denied',
+            message: 'Missing or insufficient permissions.',
+          );
     await _pump(tester, payments: payments);
 
     await _fill(tester, amount: '40.00', allocations: {0: '40.00'});
@@ -759,14 +800,15 @@ void main() {
   testWidgets('shows a data-conflict message when the debt changed under us', (
     tester,
   ) async {
-    final payments = _FakePaymentRepository(debts: [
-      _debt(invoiceId: 'inv-1', remainingAmountFils: 40000),
-    ])
-      // The repository throws ArgumentError from phase 2 when the debt is no
-      // longer OPEN or its remaining balance no longer covers the allocation.
-      ..createError = ArgumentError(
-        'Allocation amount 40000 exceeds remaining debt 0 for invoice inv-1.',
-      );
+    final payments =
+        _FakePaymentRepository(
+            debts: [_debt(invoiceId: 'inv-1', remainingAmountFils: 40000)],
+          )
+          // The repository throws ArgumentError from phase 2 when the debt is no
+          // longer OPEN or its remaining balance no longer covers the allocation.
+          ..createError = ArgumentError(
+            'Allocation amount 40000 exceeds remaining debt 0 for invoice inv-1.',
+          );
     await _pump(tester, payments: payments);
 
     await _fill(tester, amount: '40.00', allocations: {0: '40.00'});
@@ -790,16 +832,17 @@ void main() {
   testWidgets('reports a renamed supplier only when the names really differ', (
     tester,
   ) async {
-    final payments = _FakePaymentRepository(debts: [
-      _debt(invoiceId: 'inv-1', remainingAmountFils: 40000),
-    ])
-      // Phase 2 was refused and the re-read showed the company name stored on
-      // the debt no longer matches the current supplier name.
-      ..createError = FirebaseException(
-        plugin: 'cloud_firestore',
-        code: 'permission-denied',
-      )
-      ..createConflict = SupplierPaymentConflictReason.companyNameMismatch;
+    final payments =
+        _FakePaymentRepository(
+            debts: [_debt(invoiceId: 'inv-1', remainingAmountFils: 40000)],
+          )
+          // Phase 2 was refused and the re-read showed the company name stored on
+          // the debt no longer matches the current supplier name.
+          ..createError = FirebaseException(
+            plugin: 'cloud_firestore',
+            code: 'permission-denied',
+          )
+          ..createConflict = SupplierPaymentConflictReason.companyNameMismatch;
     await _pump(tester, payments: payments);
 
     await _fill(tester, amount: '40.00', allocations: {0: '40.00'});
@@ -821,14 +864,15 @@ void main() {
   testWidgets('reports a cancelled invoice instead of a permissions problem', (
     tester,
   ) async {
-    final payments = _FakePaymentRepository(debts: [
-      _debt(invoiceId: 'inv-1', remainingAmountFils: 40000),
-    ])
-      ..createError = FirebaseException(
-        plugin: 'cloud_firestore',
-        code: 'permission-denied',
-      )
-      ..createConflict = SupplierPaymentConflictReason.invoiceNotActive;
+    final payments =
+        _FakePaymentRepository(
+            debts: [_debt(invoiceId: 'inv-1', remainingAmountFils: 40000)],
+          )
+          ..createError = FirebaseException(
+            plugin: 'cloud_firestore',
+            code: 'permission-denied',
+          )
+          ..createConflict = SupplierPaymentConflictReason.invoiceNotActive;
     await _pump(tester, payments: payments);
 
     await _fill(tester, amount: '40.00', allocations: {0: '40.00'});
@@ -849,14 +893,16 @@ void main() {
   testWidgets('reports a balance conflict instead of a permissions problem', (
     tester,
   ) async {
-    final payments = _FakePaymentRepository(debts: [
-      _debt(invoiceId: 'inv-1', remainingAmountFils: 40000),
-    ])
-      ..createError = FirebaseException(
-        plugin: 'cloud_firestore',
-        code: 'permission-denied',
-      )
-      ..createConflict = SupplierPaymentConflictReason.allocationExceedsRemaining;
+    final payments =
+        _FakePaymentRepository(
+            debts: [_debt(invoiceId: 'inv-1', remainingAmountFils: 40000)],
+          )
+          ..createError = FirebaseException(
+            plugin: 'cloud_firestore',
+            code: 'permission-denied',
+          )
+          ..createConflict =
+              SupplierPaymentConflictReason.allocationExceedsRemaining;
     await _pump(tester, payments: payments);
 
     await _fill(tester, amount: '40.00', allocations: {0: '40.00'});
@@ -877,15 +923,16 @@ void main() {
   testWidgets('keeps an honest general message when no cause is established', (
     tester,
   ) async {
-    final payments = _FakePaymentRepository(debts: [
-      _debt(invoiceId: 'inv-1', remainingAmountFils: 40000),
-    ])
-      // Phase 2 refused, but every re-read precondition still holds, so no
-      // precise cause may be claimed.
-      ..createError = FirebaseException(
-        plugin: 'cloud_firestore',
-        code: 'permission-denied',
-      );
+    final payments =
+        _FakePaymentRepository(
+            debts: [_debt(invoiceId: 'inv-1', remainingAmountFils: 40000)],
+          )
+          // Phase 2 refused, but every re-read precondition still holds, so no
+          // precise cause may be claimed.
+          ..createError = FirebaseException(
+            plugin: 'cloud_firestore',
+            code: 'permission-denied',
+          );
     await _pump(tester, payments: payments);
 
     await _fill(tester, amount: '40.00', allocations: {0: '40.00'});
@@ -903,32 +950,31 @@ void main() {
     expect(find.textContaining('أصبح ملغى'), findsNothing);
   });
 
-  testWidgets('shows the already-exists message when the payment is a duplicate', (
-    tester,
-  ) async {
-    final payments = _FakePaymentRepository(debts: [
-      _debt(invoiceId: 'inv-1', remainingAmountFils: 40000),
-    ])
-      ..throwAlreadyExists = true;
-    await _pump(tester, payments: payments);
+  testWidgets(
+    'shows the already-exists message when the payment is a duplicate',
+    (tester) async {
+      final payments = _FakePaymentRepository(
+        debts: [_debt(invoiceId: 'inv-1', remainingAmountFils: 40000)],
+      )..throwAlreadyExists = true;
+      await _pump(tester, payments: payments);
 
-    await _fill(tester, amount: '40.00', allocations: {0: '40.00'});
-    await _tapSave(tester);
-    await tester.pumpAndSettle();
+      await _fill(tester, amount: '40.00', allocations: {0: '40.00'});
+      await _tapSave(tester);
+      await tester.pumpAndSettle();
 
-    expect(
-      find.text('تم تسجيل هذه الدفعة مسبقاً؛ لم تُنشأ دفعة جديدة.'),
-      findsOneWidget,
-    );
-  });
+      expect(
+        find.text('تم تسجيل هذه الدفعة مسبقاً؛ لم تُنشأ دفعة جديدة.'),
+        findsOneWidget,
+      );
+    },
+  );
 
   testWidgets('blocks double-press so only one payment is created', (
     tester,
   ) async {
-    final payments = _FakePaymentRepository(debts: [
-      _debt(invoiceId: 'inv-1', remainingAmountFils: 40000),
-    ])
-      ..createGate = Completer<void>();
+    final payments = _FakePaymentRepository(
+      debts: [_debt(invoiceId: 'inv-1', remainingAmountFils: 40000)],
+    )..createGate = Completer<void>();
     await _pump(tester, payments: payments);
 
     await _fill(tester, amount: '40.00', allocations: {0: '40.00'});
