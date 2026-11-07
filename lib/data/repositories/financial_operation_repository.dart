@@ -86,7 +86,7 @@ class FinancialOperationRepository {
     );
     return FinancialOperationLogEntry(
       operation: operation,
-      amountFils: operation.amountFils ?? details.amountFils,
+      amountFils: details.amountFils,
       cancellationReason: details.cancellationReason,
     );
   }

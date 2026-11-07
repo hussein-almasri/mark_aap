@@ -43,6 +43,7 @@ beforeEach(async () => {
       ownerUid: adminUid,
     });
     for (const [uid, role] of [[adminUid, 'ADMIN'], [employeeUid, 'EMPLOYEE']]) {
+      await setDoc(doc(db, 'users', uid), { uid });
       await setDoc(doc(db, 'users', uid, 'memberships', storeId), {
         storeId,
         role,

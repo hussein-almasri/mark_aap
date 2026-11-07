@@ -1,4 +1,5 @@
-import 'package:cloud_firestore/cloud_firestore.dart' show Timestamp;
+import 'package:cloud_firestore/cloud_firestore.dart'
+    show CollectionReference, Timestamp, WriteBatch;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mark_aap/data/models/financial_operation_model.dart';
@@ -7,7 +8,7 @@ import 'package:mark_aap/data/repositories/financial_operation_repository.dart';
 import 'package:mark_aap/data/repositories/user_repository.dart';
 import 'package:mark_aap/features/operations/screens/operations_log_screen.dart';
 
-class _FakeOperationRepository extends FinancialOperationRepository {
+class _FakeOperationRepository implements FinancialOperationRepository {
   _FakeOperationRepository({required this.entries});
 
   final List<FinancialOperationLogEntry> entries;
@@ -15,6 +16,10 @@ class _FakeOperationRepository extends FinancialOperationRepository {
   String? requestedStoreId;
   String? requestedUserId;
   bool? requestedAdminAccess;
+
+  @override
+  CollectionReference<Map<String, dynamic>> operations(String storeId) =>
+      throw UnimplementedError();
 
   @override
   Future<List<FinancialOperationLogEntry>> listOperations({
@@ -33,13 +38,34 @@ class _FakeOperationRepository extends FinancialOperationRepository {
   }
 }
 
-class _FakeUserRepository extends UserRepository {
+class _FakeUserRepository implements UserRepository {
   _FakeUserRepository(this.names);
 
   final Map<String, String?> names;
 
   @override
   Future<String?> getDisplayName({required String uid}) async => names[uid];
+
+  @override
+  void addUserAndMembershipsToBatch({
+    required WriteBatch batch,
+    required String storeId,
+    required String uid,
+    required String displayName,
+    required String email,
+    required String role,
+  }) => throw UnimplementedError();
+
+  @override
+  Future<UserModel?> getCurrentUserSession({required String uid}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<UserModel?> getUserProfile({
+    required String storeId,
+    required String uid,
+    Map<String, dynamic>? accountData,
+  }) => throw UnimplementedError();
 }
 
 const _admin = UserModel(
@@ -127,44 +153,44 @@ Future<void> _pump(
 }
 
 void main() {
-  testWidgets('shows newest operations with user, amount and cancellation details', (
-    tester,
-  ) async {
-    final repository = _FakeOperationRepository(
-      entries: [
-        _entry(
-          operationId: 'invoice-1',
-          type: FinancialOperationType.createPurchaseInvoice,
-          createdAtMillis: 1000,
-          amountFils: 10000,
-        ),
-        _entry(
-          operationId: 'cancel-invoice-1',
-          type: FinancialOperationType.cancelPurchaseInvoice,
-          createdAtMillis: 2000,
-          createdBy: 'admin-1',
-          amountFils: 10000,
-          cancellationReason: 'تم إدخال الفاتورة مرتين',
-        ),
-      ],
-    );
-    await _pump(tester, user: _admin, repository: repository);
+  testWidgets(
+    'shows newest operations with user, amount and cancellation details',
+    (tester) async {
+      final repository = _FakeOperationRepository(
+        entries: [
+          _entry(
+            operationId: 'invoice-1',
+            type: FinancialOperationType.createPurchaseInvoice,
+            createdAtMillis: 1000,
+            amountFils: 10000,
+          ),
+          _entry(
+            operationId: 'cancel-invoice-1',
+            type: FinancialOperationType.cancelPurchaseInvoice,
+            createdAtMillis: 2000,
+            createdBy: 'admin-1',
+            amountFils: 10000,
+            cancellationReason: 'تم إدخال الفاتورة مرتين',
+          ),
+        ],
+      );
+      await _pump(tester, user: _admin, repository: repository);
 
-    expect(find.text('سجل العمليات'), findsOneWidget);
-    expect(find.text('إلغاء فاتورة مشتريات'), findsOneWidget);
-    expect(find.text('إنشاء فاتورة مشتريات'), findsOneWidget);
-    expect(find.text('Admin User'), findsOneWidget);
-    expect(find.text('ألغى العملية: Admin User'), findsOneWidget);
-    expect(find.text('المبلغ: 10.00 د.أ'), findsNWidgets(2));
-    expect(find.text('تفاصيل الإلغاء'), findsOneWidget);
-    expect(find.text('سبب الإلغاء: تم إدخال الفاتورة مرتين'), findsOneWidget);
+      expect(find.text('سجل العمليات'), findsOneWidget);
+      expect(find.text('إلغاء فاتورة مشتريات'), findsOneWidget);
+      expect(find.text('إنشاء فاتورة مشتريات'), findsOneWidget);
+      expect(find.text('ألغى العملية: Admin User'), findsOneWidget);
+      expect(find.text('المبلغ: 10.00 د.أ'), findsNWidgets(2));
+      expect(find.text('تفاصيل الإلغاء'), findsOneWidget);
+      expect(find.text('سبب الإلغاء: تم إدخال الفاتورة مرتين'), findsOneWidget);
 
-    final newest = tester.getTopLeft(find.text('إلغاء فاتورة مشتريات')).dy;
-    final oldest = tester.getTopLeft(find.text('إنشاء فاتورة مشتريات')).dy;
-    expect(newest, lessThan(oldest));
-    expect(find.byIcon(Icons.delete), findsNothing);
-    expect(find.byIcon(Icons.edit), findsNothing);
-  });
+      final newest = tester.getTopLeft(find.text('إلغاء فاتورة مشتريات')).dy;
+      final oldest = tester.getTopLeft(find.text('إنشاء فاتورة مشتريات')).dy;
+      expect(newest, lessThan(oldest));
+      expect(find.byIcon(Icons.delete), findsNothing);
+      expect(find.byIcon(Icons.edit), findsNothing);
+    },
+  );
 
   testWidgets('filters operations by type', (tester) async {
     final repository = _FakeOperationRepository(
@@ -186,17 +212,21 @@ void main() {
     );
     await _pump(tester, user: _admin, repository: repository);
 
-    await tester.tap(find.byType(DropdownButtonFormField<FinancialOperationType?>));
+    await tester.tap(
+      find.byType(DropdownButtonFormField<FinancialOperationType?>),
+    );
     await tester.pumpAndSettle();
     await tester.tap(find.text('إلغاء دفعة مورد').last);
     await tester.pumpAndSettle();
 
     expect(find.text('إنشاء دفعة مورد'), findsNothing);
-    expect(find.text('إلغاء دفعة مورد'), findsOneWidget);
+    expect(find.text('إلغاء دفعة مورد'), findsNWidgets(2));
     expect(find.text('مسح الفلاتر'), findsOneWidget);
   });
 
-  testWidgets('requests only the signed-in employee operations', (tester) async {
+  testWidgets('requests only the signed-in employee operations', (
+    tester,
+  ) async {
     final repository = _FakeOperationRepository(
       entries: [
         _entry(
@@ -212,17 +242,19 @@ void main() {
     expect(repository.requestedStoreId, 'store-1');
     expect(repository.requestedUserId, 'employee-1');
     expect(repository.requestedAdminAccess, false);
-    expect(find.text('Employee User'), findsOneWidget);
+    expect(find.text('المستخدم: Employee User'), findsOneWidget);
   });
 
   testWidgets('shows an explicit load error and retries', (tester) async {
-    final repository = _FakeOperationRepository(entries: [
-      _entry(
-        operationId: 'deposit-1',
-        type: FinancialOperationType.createCashDeposit,
-        createdAtMillis: 1000,
-      ),
-    ])..listError = StateError('temporary');
+    final repository = _FakeOperationRepository(
+      entries: [
+        _entry(
+          operationId: 'deposit-1',
+          type: FinancialOperationType.createCashDeposit,
+          createdAtMillis: 1000,
+        ),
+      ],
+    )..listError = StateError('temporary');
     await _pump(tester, user: _admin, repository: repository);
 
     expect(find.text('تعذر تحميل سجل العمليات.'), findsOneWidget);

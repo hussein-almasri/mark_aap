@@ -2059,9 +2059,10 @@ service cloud.firestore {
           && (resource == null
             || resource.data.createdBy == request.auth.uid
             || isAdmin(storeId));
+        allow list: if isAdmin(storeId);
         allow list: if isFinancialStoreMember(storeId)
-          && (isAdmin(storeId)
-            || resource.data.createdBy == request.auth.uid);
+          && resource.data.keys().hasAny(['createdBy'])
+          && resource.data.createdBy == request.auth.uid;
         allow create: if validOperationCreate(storeId, operationId);
         allow update: if validOperationCompletion(storeId, operationId);
         allow delete: if false;

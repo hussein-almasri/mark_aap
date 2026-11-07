@@ -154,6 +154,7 @@ class _OperationsLogScreenState extends State<OperationsLogScreen> {
                 width: 230,
                 child: DropdownButtonFormField<FinancialOperationType?>(
                   initialValue: _selectedType,
+                  isExpanded: true,
                   decoration: const InputDecoration(
                     labelText: 'نوع العملية',
                     border: OutlineInputBorder(),
@@ -167,7 +168,10 @@ class _OperationsLogScreenState extends State<OperationsLogScreen> {
                     ...FinancialOperationType.values.map(
                       (type) => DropdownMenuItem<FinancialOperationType?>(
                         value: type,
-                        child: Text(_typeLabel(type)),
+                        child: Text(
+                          _typeLabel(type),
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
                     ),
                   ],

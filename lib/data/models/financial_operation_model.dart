@@ -65,14 +65,10 @@ class FinancialOperationModel {
     this.withdrawalId,
     this.depositId,
     this.cashBoxId,
-    this.amountFils,
     List<String>? photoIds,
   }) : photoIds = photoIds == null ? null : List.unmodifiable(photoIds) {
     _requireId(operationId, 'operationId');
     _requireId(createdBy, 'createdBy');
-    if (amountFils != null && amountFils! < 0) {
-      throw ArgumentError.value(amountFils, 'amountFils', 'Must be non-negative.');
-    }
     if (retryCount < 0 || retryCount > 3) {
       throw ArgumentError.value(retryCount, 'retryCount', 'Must be between 0 and 3.');
     }
@@ -90,7 +86,6 @@ class FinancialOperationModel {
   final String? withdrawalId;
   final String? depositId;
   final String? cashBoxId;
-  final int? amountFils;
   final List<String>? photoIds;
 
   factory FinancialOperationModel.fromDocument(
@@ -129,7 +124,6 @@ class FinancialOperationModel {
       withdrawalId: _optionalString(data, 'withdrawalId'),
       depositId: _optionalString(data, 'depositId'),
       cashBoxId: _optionalString(data, 'cashBoxId'),
-      amountFils: _optionalInt(data, 'amountFils'),
       photoIds: rawPhotoIds == null ? null : List<String>.from(rawPhotoIds),
     );
   }
@@ -146,7 +140,6 @@ class FinancialOperationModel {
         if (withdrawalId != null) 'withdrawalId': withdrawalId,
         if (depositId != null) 'depositId': depositId,
         if (cashBoxId != null) 'cashBoxId': cashBoxId,
-        if (amountFils != null) 'amountFils': amountFils,
         if (photoIds != null) 'photoIds': photoIds,
       };
 
@@ -243,14 +236,6 @@ int _requiredInt(Map<String, dynamic> data, String key) {
     throw FormatException('Financial operation $key must be an integer.');
   }
   return value;
-}
-
-int? _optionalInt(Map<String, dynamic> data, String key) {
-  final value = data[key];
-  if (value != null && value is! int) {
-    throw FormatException('Financial operation $key must be an integer.');
-  }
-  return value as int?;
 }
 
 Timestamp _requiredTimestamp(Map<String, dynamic> data, String key) {
