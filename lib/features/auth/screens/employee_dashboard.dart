@@ -6,6 +6,7 @@ import '../../debts/screens/debt_management_screen.dart';
 import '../../operations/screens/operations_log_screen.dart';
 import '../../products/screens/product_list_screen.dart';
 import '../../purchases/screens/purchase_invoice_list_screen.dart';
+import 'store_settings_screen.dart';
 import '../../suppliers/screens/supplier_debt_list_screen.dart';
 
 class EmployeeDashboard extends StatelessWidget {
@@ -101,6 +102,21 @@ class EmployeeDashboard extends StatelessWidget {
             onTap: () => Navigator.of(context).push<void>(
               MaterialPageRoute(
                 builder: (_) => OperationsLogScreen(user: user),
+              ),
+            ),
+          ),
+        ),
+        Card(
+          child: ListTile(
+            leading: const CircleAvatar(
+              child: Icon(Icons.settings_outlined),
+            ),
+            title: const Text('بيانات المتجر'),
+            subtitle: const Text('عرض بيانات المتجر'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push<void>(
+              MaterialPageRoute(
+                builder: (_) => StoreSettingsScreen(user: user),
               ),
             ),
           ),

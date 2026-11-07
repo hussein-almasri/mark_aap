@@ -36,4 +36,27 @@ class StoreRepository {
 
     return StoreModel.fromFirestore(document);
   }
+
+  Future<void> updateStoreName({
+    required String storeId,
+    required String name,
+  }) async {
+    final normalizedName = validateStoreName(name);
+    await _stores.doc(storeId).update({
+      'name': normalizedName,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  static String validateStoreName(String name) {
+    final normalizedName = name.trim();
+    if (normalizedName.isEmpty || normalizedName.length > 120) {
+      throw ArgumentError.value(
+        name,
+        'name',
+        'Store name must be non-empty and at most 120 characters.',
+      );
+    }
+    return normalizedName;
+  }
 }
