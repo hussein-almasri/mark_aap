@@ -1,14 +1,72 @@
+import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:mark_aap/data/models/supplier_payment_model.dart';
 import 'package:mark_aap/data/repositories/supplier_payment_repository.dart';
 
+Future<void> _seedDebt(
+  FakeFirebaseFirestore firestore, {
+  required String invoiceId,
+  required int amountFils,
+}) {
+  return firestore
+      .collection('stores')
+      .doc('store-1')
+      .collection('supplierDebts')
+      .doc(invoiceId)
+      .set({
+        'invoiceId': invoiceId,
+        'companyId': 'company-1',
+        'companyName': 'Test Supplier',
+        'originalAmountFils': amountFils,
+        'remainingAmountFils': amountFils,
+        'status': 'OPEN',
+        'createdAt': DateTime.utc(2024),
+        'createdBy': 'admin-1',
+        'operationId': 'invoice-$invoiceId',
+        'lastOperationId': 'invoice-$invoiceId',
+      });
+}
+
+Future<void> _seedInvoice(
+  FakeFirebaseFirestore firestore,
+  String invoiceId,
+  int amountFils,
+) {
+  return firestore
+      .collection('stores')
+      .doc('store-1')
+      .collection('purchaseInvoices')
+      .doc(invoiceId)
+      .set({
+        'companyId': 'company-1',
+        'companyName': 'Test Supplier',
+        'totalAmountFils': amountFils,
+        'shopCashAmountFils': 0,
+        'outsideCashAmountFils': 0,
+        'supplierDebtAmountFils': amountFils,
+        'status': 'ACTIVE',
+        'createdAt': DateTime.utc(2024),
+        'createdBy': 'admin-1',
+        'operationId': invoiceId,
+        'photoIds': <String>[],
+      });
+}
+
 void main() {
   const String testStoreId = 'store-1';
 
   group('SupplierPaymentRepository', () {
+    late FakeFirebaseFirestore firestore;
+
+    setUp(() {
+      firestore = FakeFirebaseFirestore();
+    });
+
     test('createPayment with one allocation succeeds', () async {
-      final repo = SupplierPaymentRepository();
+      final repo = SupplierPaymentRepository(firestore: firestore);
+      await _seedDebt(firestore, invoiceId: 'invoice-1', amountFils: 700);
+      await _seedInvoice(firestore, 'invoice-1', 700);
 
       final operationId = 'payment-test-1';
 
@@ -36,28 +94,34 @@ void main() {
       expect(payment.allocationCount, 1);
       expect(payment.allocation1InvoiceId, 'invoice-1');
       expect(payment.allocation1AmountFils, 700);
-      expect(payment.status, 'ACTIVE');
+      expect(payment.status, SupplierPaymentStatus.active);
       expect(payment.notes, 'Test payment');
 
       // Verify supplier debt was decreased
-      final debtSnapshot =
-          await repo.supplierDebts(testStoreId).doc('invoice-1').get();
-      final debtData = debtSnapshot.data()! as Map<String, dynamic>;
+      final debtSnapshot = await repo
+          .supplierDebts(testStoreId)
+          .doc('invoice-1')
+          .get();
+      final debtData = debtSnapshot.data()!;
       expect(debtData['originalAmountFils'], 700);
       expect(debtData['remainingAmountFils'], 0);
       expect(debtData['status'], 'PAID');
 
       // Verify automatic cash withdrawal was created (SHOP_CASH)
-      final withdrawalSnapshot =
-          await repo.cashWithdrawals(testStoreId).doc('supplierPayment_$operationId').get();
+      final withdrawalSnapshot = await repo
+          .cashWithdrawals(testStoreId)
+          .doc('supplierPayment_$operationId')
+          .get();
       expect(withdrawalSnapshot.exists, true);
       final withdrawalData = withdrawalSnapshot.data()!;
       expect(withdrawalData['amountFils'], 700);
       expect(withdrawalData['type'], 'PURCHASE_INVOICE');
 
       // Verify financial operation was created
-      final operationSnapshot =
-          await repo.operations(testStoreId).doc(operationId).get();
+      final operationSnapshot = await repo
+          .operations(testStoreId)
+          .doc(operationId)
+          .get();
       expect(operationSnapshot.exists, true);
       final opData = operationSnapshot.data()!;
       expect(opData['type'], 'CREATE_SUPPLIER_PAYMENT');
@@ -66,7 +130,13 @@ void main() {
     });
 
     test('createPayment with multiple allocations succeeds', () async {
-      final repo = SupplierPaymentRepository();
+      final repo = SupplierPaymentRepository(firestore: firestore);
+      await _seedDebt(firestore, invoiceId: 'invoice-2', amountFils: 400);
+      await _seedDebt(firestore, invoiceId: 'invoice-3', amountFils: 300);
+      await _seedDebt(firestore, invoiceId: 'invoice-4', amountFils: 300);
+      await _seedInvoice(firestore, 'invoice-2', 400);
+      await _seedInvoice(firestore, 'invoice-3', 300);
+      await _seedInvoice(firestore, 'invoice-4', 300);
 
       final operationId = 'payment-test-2';
 
@@ -100,27 +170,30 @@ void main() {
       expect(payment.allocation2AmountFils, 300);
       expect(payment.allocation3InvoiceId, 'invoice-4');
       expect(payment.allocation3AmountFils, 300);
-      expect(payment.status, 'ACTIVE');
+      expect(payment.status, SupplierPaymentStatus.active);
       expect(payment.notes, 'Multi-alloc payment');
 
       // Since source is OUTSIDE_CASH, no withdrawal should be created
-      final withdrawalSnapshot =
-          await repo.cashWithdrawals(testStoreId).doc('supplierPayment_$operationId').get();
+      final withdrawalSnapshot = await repo
+          .cashWithdrawals(testStoreId)
+          .doc('supplierPayment_$operationId')
+          .get();
       expect(withdrawalSnapshot.exists, false);
 
       // Verify debts were decreased
       for (final invoiceId in ['invoice-2', 'invoice-3', 'invoice-4']) {
-        final debtSnapshot =
-            await repo.supplierDebts(testStoreId).doc(invoiceId).get();
-        final debtData = debtSnapshot.data()! as Map<String, dynamic>;
-        // Each debt should have remaining decreased by the allocation amount
-        // (assuming original was at least the allocation amount)
+        final debtSnapshot = await repo
+            .supplierDebts(testStoreId)
+            .doc(invoiceId)
+            .get();
         expect(debtSnapshot.exists, true);
+        expect(debtSnapshot.data()?['remainingAmountFils'], 0);
+        expect(debtSnapshot.data()?['status'], 'PAID');
       }
     });
 
     test('createPayment rejects allocationCount > 5', () async {
-      final repo = SupplierPaymentRepository();
+      final repo = SupplierPaymentRepository(firestore: firestore);
 
       expect(
         () => repo.createPayment(
@@ -140,7 +213,7 @@ void main() {
     });
 
     test('createPayment rejects duplicate invoice IDs', () async {
-      final repo = SupplierPaymentRepository();
+      final repo = SupplierPaymentRepository(firestore: firestore);
 
       expect(
         () => repo.createPayment(
@@ -162,7 +235,7 @@ void main() {
     });
 
     test('createPayment rejects allocation total mismatch', () async {
-      final repo = SupplierPaymentRepository();
+      final repo = SupplierPaymentRepository(firestore: firestore);
 
       expect(
         () => repo.createPayment(
@@ -184,14 +257,16 @@ void main() {
     });
 
     test('createPayment rejects allocation amount > remaining debt', () async {
-      final repo = SupplierPaymentRepository();
+      final repo = SupplierPaymentRepository(firestore: firestore);
+      await _seedDebt(firestore, invoiceId: 'invoice-1', amountFils: 500);
+      await _seedInvoice(firestore, 'invoice-1', 500);
 
-      expect(
-        () => repo.createPayment(
+      await expectLater(
+        repo.createPayment(
           storeId: 'store-1',
           companyId: 'company-1',
           companyName: 'Supplier',
-          amountFils: 500,
+          amountFils: 600,
           source: SupplierPaymentSource.shopCash,
           allocationCount: 1,
           allocation1InvoiceId: 'invoice-1',
@@ -199,12 +274,20 @@ void main() {
           createdBy: 'admin-1',
           operationId: 'payment-exceed-1',
         ),
-        throwsArgumentError,
+        throwsA(
+          isA<SupplierPaymentStageException>().having(
+            (error) => error.conflict,
+            'conflict',
+            SupplierPaymentConflictReason.allocationExceedsRemaining,
+          ),
+        ),
       );
     });
 
     test('createPayment with OUTSIDE_CASH creates no withdrawal', () async {
-      final repo = SupplierPaymentRepository();
+      final repo = SupplierPaymentRepository(firestore: firestore);
+      await _seedDebt(firestore, invoiceId: 'invoice-5', amountFils: 500);
+      await _seedInvoice(firestore, 'invoice-5', 500);
 
       final operationId = 'payment-outside-1';
 
@@ -225,13 +308,17 @@ void main() {
       expect(paidId, operationId);
 
       // No withdrawal should be created for OUTSIDE_CASH
-      final withdrawalSnapshot =
-          await repo.cashWithdrawals(testStoreId).doc('supplierPayment_$operationId').get();
+      final withdrawalSnapshot = await repo
+          .cashWithdrawals(testStoreId)
+          .doc('supplierPayment_$operationId')
+          .get();
       expect(withdrawalSnapshot.exists, false);
     });
 
     test('idempotency: duplicate operationId throws', () async {
-      final repo = SupplierPaymentRepository();
+      final repo = SupplierPaymentRepository(firestore: firestore);
+      await _seedDebt(firestore, invoiceId: 'invoice-1', amountFils: 300);
+      await _seedInvoice(firestore, 'invoice-1', 300);
       final operationId = 'payment-idempotent-1';
 
       // First creation succeeds
@@ -250,8 +337,8 @@ void main() {
       );
 
       // Second attempt with same operationId should fail
-      expect(
-        () => repo.createPayment(
+      await expectLater(
+        repo.createPayment(
           storeId: testStoreId,
           companyId: 'company-1',
           companyName: 'Supplier',
@@ -264,12 +351,14 @@ void main() {
           createdBy: 'admin-1',
           operationId: operationId, // same operationId
         ),
-        throwsA(isA<PaymentAllocationMismatchException>),
+        throwsA(isA<PaymentAllocationMismatchException>()),
       );
     });
 
     test('getPayment returns existing payment', () async {
-      final repo = SupplierPaymentRepository();
+      final repo = SupplierPaymentRepository(firestore: firestore);
+      await _seedDebt(firestore, invoiceId: 'invoice-1', amountFils: 250);
+      await _seedInvoice(firestore, 'invoice-1', 250);
 
       // First create a payment
       await repo.createPayment(
@@ -294,7 +383,11 @@ void main() {
     });
 
     test('listPayments returns list of payments', () async {
-      final repo = SupplierPaymentRepository();
+      final repo = SupplierPaymentRepository(firestore: firestore);
+      await _seedDebt(firestore, invoiceId: 'invoice-1', amountFils: 100);
+      await _seedDebt(firestore, invoiceId: 'invoice-2', amountFils: 200);
+      await _seedInvoice(firestore, 'invoice-1', 100);
+      await _seedInvoice(firestore, 'invoice-2', 200);
 
       // Create a few payments
       await repo.createPayment(
@@ -326,7 +419,10 @@ void main() {
 
       final payments = await repo.listPayments(testStoreId);
       expect(payments.length, 2);
-      expect(payments.map((p) => p.companyName).toSet(), {'Supplier A', 'Supplier B'});
+      expect(payments.map((p) => p.companyName).toSet(), {
+        'Supplier A',
+        'Supplier B',
+      });
     });
   });
 }

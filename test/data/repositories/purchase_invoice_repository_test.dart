@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 
 import 'package:mark_aap/data/models/purchase_invoice_model.dart';
 import 'package:mark_aap/data/repositories/purchase_invoice_repository.dart';
@@ -8,7 +9,7 @@ void main() {
 
   group('PurchaseInvoiceRepository', () {
     test('createInvoice succeeds with valid data', () async {
-      final repo = PurchaseInvoiceRepository();
+      final repo = PurchaseInvoiceRepository(firestore: FakeFirebaseFirestore());
       final operationId = 'invoice-test-1';
 
       final returnedId = await repo.createInvoice(
@@ -68,10 +69,10 @@ void main() {
     });
 
     test('createInvoice rejects invalid component sum', () async {
-      final repo = PurchaseInvoiceRepository();
+      final repo = PurchaseInvoiceRepository(firestore: FakeFirebaseFirestore());
 
-      expect(
-        () => repo.createInvoice(
+      await expectLater(
+        repo.createInvoice(
           storeId: testStoreId,
           companyId: 'company-1',
           companyName: 'Supplier',
@@ -90,7 +91,7 @@ void main() {
     });
 
     test('createInvoice rejects total <= 0', () async {
-      final repo = PurchaseInvoiceRepository();
+      final repo = PurchaseInvoiceRepository(firestore: FakeFirebaseFirestore());
 
       expect(
         () => repo.createInvoice(
@@ -112,7 +113,7 @@ void main() {
     });
 
     test('idempotency: duplicate operationId throws', () async {
-      final repo = PurchaseInvoiceRepository();
+      final repo = PurchaseInvoiceRepository(firestore: FakeFirebaseFirestore());
       final operationId = 'invoice-idempotent-1';
 
       // First creation succeeds
@@ -147,12 +148,12 @@ void main() {
           createdBy: 'admin-1',
           operationId: operationId,
         ),
-        throwsA(isA<InvoiceAlreadyExistsException>),
+        throwsA(isA<InvoiceAlreadyExistsException>()),
       );
     });
 
     test('getInvoice returns existing invoice', () async {
-      final repo = PurchaseInvoiceRepository();
+      final repo = PurchaseInvoiceRepository(firestore: FakeFirebaseFirestore());
 
       // First create an invoice
       await repo.createInvoice(
@@ -180,7 +181,7 @@ void main() {
     });
 
     test('listInvoices returns list of invoices', () async {
-      final repo = PurchaseInvoiceRepository();
+      final repo = PurchaseInvoiceRepository(firestore: FakeFirebaseFirestore());
 
       // Create a few invoices
       await repo.createInvoice(
