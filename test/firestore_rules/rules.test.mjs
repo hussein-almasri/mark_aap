@@ -1215,6 +1215,62 @@ async function startFinancialOperation(db, {
   });
 }
 
+function customerNameKey(name) {
+  return `c_${Buffer.from(name.trim().toLowerCase(), 'utf8').toString('base64url')}`;
+}
+
+async function seedCustomer({
+  customerId = 'customer-1',
+  storeId = 'store-1',
+  name = 'Test Customer',
+  phone = null,
+  debtEnabled = true,
+  isActive = true,
+} = {}) {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(doc(db, 'stores', storeId, 'customers', customerId), {
+      name,
+      phone,
+      debtEnabled,
+      isActive,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      createdBy: 'admin-1',
+      updatedBy: 'admin-1',
+    });
+    await setDoc(
+      doc(db, 'stores', storeId, 'customerNameKeys', customerNameKey(name)),
+      {
+        customerId,
+        normalizedName: name.trim().toLowerCase(),
+      },
+    );
+  });
+}
+
+async function seedCustomerTransaction({
+  customerId = 'customer-1',
+  transactionId = 'debt-1',
+  status = 'ACTIVE',
+  cancellation = {},
+} = {}) {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(
+      context.firestore(),
+      'stores', 'store-1', 'customers', customerId, 'transactions',
+      transactionId,
+    ), {
+      type: 'DEBT',
+      amountFils: 5000,
+      createdAt: new Date(),
+      createdBy: 'admin-1',
+      status,
+      ...cancellation,
+    });
+  });
+}
+
 async function seedFinancialInvoice({
   storeId = 'store-1',
   invoiceId = 'invoice-1',
@@ -1253,131 +1309,7 @@ async function seedFinancialInvoice({
         createdBy: 'admin-1',
         operationId: invoiceId,
         lastOperationId: invoiceId,
-});
-
-test('Employee cannot cancel transaction', async () => {
-  await seedCustomer({ customerId: 'customer-1', isActive: true });
-  await testEnv.withSecurityRulesDisabled(async (context) => {
-    const db = context.firestore();
-    await setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1'), {
-      name: 'Test Customer',
-      debtEnabled: true,
-      isActive: true,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      createdBy: 'admin-1',
-      updatedBy: 'admin-1',
-    });
-    await setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
-      type: 'DEBT',
-      amountFils: 5000,
-      createdAt: new Date(),
-      createdBy: 'admin-1',
-      status: 'ACTIVE',
-    });
-  });
-  const db = testEnv.authenticatedContext('employee-1').firestore();
-  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
-    status: 'CANCELLED',
-    cancelledAt: serverTimestamp(),
-    cancelledBy: 'employee-1',
-    cancellationReason: 'Employee attempt',
-  }));
-});
-
-test('Admin can cancel ACTIVE transaction', async () => {
-  await seedCustomer({ customerId: 'customer-1', isActive: true });
-  await testEnv.withSecurityRulesDisabled(async (context) => {
-    const db = context.firestore();
-    await setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1'), {
-      name: 'Test Customer',
-      debtEnabled: true,
-      isActive: true,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      createdBy: 'admin-1',
-      updatedBy: 'admin-1',
-    });
-    await setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
-      type: 'DEBT',
-      amountFils: 5000,
-      createdAt: new Date(),
-      createdBy: 'admin-1',
-      status: 'ACTIVE',
-    });
-  });
-  const db = testEnv.authenticatedContext('admin-1').firestore();
-  await assertSucceeds(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
-    status: 'CANCELLED',
-    cancelledAt: serverTimestamp(),
-    cancelledBy: 'admin-1',
-    cancellationReason: 'Admin cancellation',
-  }));
-  const debt = await getDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'));
-  assert.equal(debt.data().status, 'CANCELLED');
-});
-
-test('Cancellation requires previous ACTIVE state', async () => {
-  await seedCustomer({ customerId: 'customer-1', isActive: true });
-  await testEnv.withSecurityRulesDisabled(async (context) => {
-    const db = context.firestore();
-    await setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1'), {
-      name: 'Test Customer',
-      debtEnabled: true,
-      isActive: true,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      createdBy: 'admin-1',
-      updatedBy: 'admin-1',
-    });
-    await setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
-      type: 'DEBT',
-      amountFils: 5000,
-      createdAt: new Date(),
-      createdBy: 'admin-1',
-      status: 'ACTIVE',
-    });
-  });
-  const db = testEnv.authenticatedContext('admin-1').firestore();
-  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
-    status: 'CANCELLED',
-    cancelledAt: serverTimestamp(),
-    cancelledBy: 'admin-1',
-    cancellationReason: 'Cancel inactive',
-  }));
-  const debt = await getDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'));
-  assert.equal(debt.data().status, 'ACTIVE');
-});
-
-test('Invalid cancelledBy is denied', async () => {
-  await seedCustomer({ customerId: 'customer-1', isActive: true });
-  await testEnv.withSecurityRulesDisabled(async (context) => {
-    const db = context.firestore();
-    await setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1'), {
-      name: 'Test Customer',
-      debtEnabled: true,
-      isActive: true,
-      createdAt: new Date(),
-      updatedAt: new Date,
-      createdBy: 'admin-1',
-      updatedBy: 'admin-1',
-    });
-    await setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
-      type: 'DEBT',
-      amountFils: 5000,
-      createdAt: new Date(),
-      createdBy: 'admin-1',
-      status: 'ACTIVE',
-    });
-  });
-  const db = testEnv.authenticatedContext('employee-1').firestore();
-  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
-    status: 'CANCELLED',
-    cancelledBy: 'unauthorized-user',
-    cancellationReason: 'Test',
-    cancelledAt: serverTimestamp(),
-  }));
-});
+      });
     }
     if (shopCashAmountFils > 0) {
       await setDoc(
@@ -1394,6 +1326,66 @@ test('Invalid cancelledBy is denied', async () => {
     }
   });
 }
+
+test('Employee cannot cancel transaction', async () => {
+  await seedEmployee();
+  await seedCustomer({ customerId: 'customer-1', isActive: true });
+  await seedCustomerTransaction();
+  const db = testEnv.authenticatedContext('employee-1').firestore();
+  await assertFails(updateDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
+    status: 'CANCELLED',
+    cancelledAt: serverTimestamp(),
+    cancelledBy: 'employee-1',
+    cancellationReason: 'Employee attempt',
+  }));
+});
+
+test('Admin can cancel ACTIVE transaction', async () => {
+  await seedCustomer({ customerId: 'customer-1', isActive: true });
+  await seedCustomerTransaction();
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertSucceeds(updateDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
+    status: 'CANCELLED',
+    cancelledAt: serverTimestamp(),
+    cancelledBy: 'admin-1',
+    cancellationReason: 'Admin cancellation',
+  }));
+  const debt = await getDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'));
+  assert.equal(debt.data().status, 'CANCELLED');
+});
+
+test('Cancellation requires previous ACTIVE state', async () => {
+  await seedCustomer({ customerId: 'customer-1', isActive: true });
+  await seedCustomerTransaction({
+    status: 'CANCELLED',
+    cancellation: {
+      cancelledAt: new Date(),
+      cancelledBy: 'admin-1',
+      cancellationReason: 'Already cancelled',
+    },
+  });
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertFails(updateDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
+    status: 'CANCELLED',
+    cancelledAt: serverTimestamp(),
+    cancelledBy: 'admin-1',
+    cancellationReason: 'Cancel inactive',
+  }));
+  const debt = await getDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'));
+  assert.equal(debt.data().status, 'CANCELLED');
+});
+
+test('Invalid cancelledBy is denied', async () => {
+  await seedCustomer({ customerId: 'customer-1', isActive: true });
+  await seedCustomerTransaction();
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertFails(updateDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
+    status: 'CANCELLED',
+    cancelledBy: 'unauthorized-user',
+    cancellationReason: 'Test',
+    cancelledAt: serverTimestamp(),
+  }));
+});
 
 function invoiceCreateBatch(db, {
   invoiceId = 'invoice-new',
@@ -1964,6 +1956,7 @@ test('Admin can create customer', async () => {
 });
 
 test('Employee cannot create customer', async () => {
+  await seedEmployee();
   const db = testEnv.authenticatedContext('employee-1', {
     email: 'employee@example.com',
   }).firestore();
@@ -1994,6 +1987,7 @@ test('Admin can read inactive customer', async () => {
 });
 
 test('Employee can read active customer', async () => {
+  await seedEmployee();
   await seedCustomer({ customerId: 'customer-1', isActive: true });
   const db = testEnv.authenticatedContext('employee-1').firestore();
   const result = await assertSucceeds(getDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1')));
@@ -2001,6 +1995,7 @@ test('Employee can read active customer', async () => {
 });
 
 test('Employee cannot read inactive customer', async () => {
+  await seedEmployee();
   await seedCustomer({ customerId: 'customer-inactive', isActive: false });
   const db = testEnv.authenticatedContext('employee-1').firestore();
   await assertPermissionDenied(getDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-inactive')));
@@ -2018,6 +2013,7 @@ test('Admin can update customer', async () => {
 });
 
 test('Employee cannot update customer', async () => {
+  await seedEmployee();
   await seedCustomer({ customerId: 'customer-1' });
   const db = testEnv.authenticatedContext('employee-1').firestore();
   await assertPermissionDenied(updateDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1'), {
@@ -2027,6 +2023,7 @@ test('Employee cannot update customer', async () => {
 });
 
 test('Employee cannot change debtEnabled', async () => {
+  await seedEmployee();
   await seedCustomer({ customerId: 'customer-1', debtEnabled: true });
   const db = testEnv.authenticatedContext('employee-1').firestore();
   await assertPermissionDenied(updateDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1'), {
@@ -2042,6 +2039,7 @@ test('Customer cannot be deleted by Admin', async () => {
 });
 
 test('Customer cannot be deleted by Employee', async () => {
+  await seedEmployee();
   await seedCustomer({ customerId: 'customer-1' });
   const db = testEnv.authenticatedContext('employee-1').firestore();
   await assertPermissionDenied(deleteDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1')));
@@ -2071,6 +2069,7 @@ test('Invalid customerNameKeys claim is denied', async () => {
 });
 
 test('Employee cannot create customerNameKeys claim', async () => {
+  await seedEmployee();
   const db = testEnv.authenticatedContext('employee-1').firestore();
   await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customerNameKeys', customerNameKey('New Customer')), {
     customerId: 'employee-customer',
@@ -2079,6 +2078,7 @@ test('Employee cannot create customerNameKeys claim', async () => {
 });
 
 test('Employee cannot delete customerNameKeys claim', async () => {
+  await seedEmployee();
   // First create a valid claim as admin
   await testEnv.withSecurityRulesDisabled(async (context) => {
     const db = context.firestore();
@@ -2124,6 +2124,7 @@ test('Admin can read customer transaction history', async () => {
 });
 
 test('Employee can read transaction history for an active customer', async () => {
+  await seedEmployee();
   await seedCustomer({ customerId: 'customer-1', isActive: true });
   const db = testEnv.authenticatedContext('employee-1').firestore();
   const result = await assertSucceeds(getDocs(
@@ -2133,6 +2134,7 @@ test('Employee can read transaction history for an active customer', async () =>
 });
 
 test('Employee cannot read transactions of an inactive customer', async () => {
+  await seedEmployee();
   await seedCustomer({ customerId: 'customer-inactive', isActive: false });
   const db = testEnv.authenticatedContext('employee-1').firestore();
   await assertPermissionDenied(getDocs(
@@ -2157,6 +2159,7 @@ test('Admin can create DEBT', async () => {
 });
 
 test('Employee can create DEBT when debtEnabled=true', async () => {
+  await seedEmployee();
   await seedCustomer({ customerId: 'customer-1', debtEnabled: true, isActive: true });
   const db = testEnv.authenticatedContext('employee-1').firestore();
   await assertSucceeds(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
@@ -2172,6 +2175,7 @@ test('Employee can create DEBT when debtEnabled=true', async () => {
 });
 
 test('Employee cannot create DEBT when debtEnabled=false', async () => {
+  await seedEmployee();
   await seedCustomer({ customerId: 'customer-1', debtEnabled: false, isActive: true });
   const db = testEnv.authenticatedContext('employee-1').firestore();
   await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
@@ -2215,6 +2219,7 @@ test('Admin can create PAYMENT', async () => {
 });
 
 test('Employee can create PAYMENT', async () => {
+  await seedEmployee();
   await seedCustomer({ customerId: 'customer-1', debtEnabled: true, isActive: true });
   const db = testEnv.authenticatedContext('employee-1').firestore();
   await assertSucceeds(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'payment-1'), {
