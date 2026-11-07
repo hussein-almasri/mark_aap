@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import '../../core/utils/data_load_diagnostics.dart';
 import '../models/cash_deposit_model.dart';
 import '../models/cash_withdrawal_model.dart';
 import '../models/financial_operation_model.dart';
@@ -52,10 +53,17 @@ class FinancialOperationRepository {
       query = query.where('createdBy', isEqualTo: currentUserId);
     }
 
-    final snapshot = await query.get();
-    final operationModels = snapshot.docs
-        .map(FinancialOperationModel.fromDocument)
-        .toList();
+    final snapshot = await DataLoadDiagnostics.run(
+      'operations query stores/$storeId/operations'
+      '${isAdmin ? '' : ' where createdBy=$currentUserId'}',
+      query.get,
+      successDetails: (result) => 'count=${result.docs.length}',
+    );
+    final operationModels = await DataLoadDiagnostics.run(
+      'operations parse stores/$storeId/operations',
+      () => snapshot.docs.map(FinancialOperationModel.fromDocument).toList(),
+      successDetails: (models) => 'count=${models.length}',
+    );
     final relatedDocuments =
         <String, Future<DocumentSnapshot<Map<String, dynamic>>>>{};
     final entries = await Future.wait(
@@ -103,7 +111,10 @@ class FinancialOperationRepository {
         _purchaseInvoices(storeId).doc(invoiceId),
       );
       if (!snapshot.exists) return (amountFils: null, cancellationReason: null);
-      final invoice = PurchaseInvoiceModel.fromDocument(snapshot);
+      final invoice = await DataLoadDiagnostics.run(
+        'operations parse linked document ${snapshot.reference.path}',
+        () => PurchaseInvoiceModel.fromDocument(snapshot),
+      );
       return (
         amountFils: invoice.totalAmountFils,
         cancellationReason: operation.type ==
@@ -119,7 +130,10 @@ class FinancialOperationRepository {
         _supplierPayments(storeId).doc(paymentId),
       );
       if (!snapshot.exists) return (amountFils: null, cancellationReason: null);
-      final payment = SupplierPaymentModel.fromDocument(snapshot);
+      final payment = await DataLoadDiagnostics.run(
+        'operations parse linked document ${snapshot.reference.path}',
+        () => SupplierPaymentModel.fromDocument(snapshot),
+      );
       return (
         amountFils: payment.amountFils,
         cancellationReason: operation.type ==
@@ -135,7 +149,10 @@ class FinancialOperationRepository {
         _cashWithdrawals(storeId).doc(withdrawalId),
       );
       if (!snapshot.exists) return (amountFils: null, cancellationReason: null);
-      final withdrawal = CashWithdrawalModel.fromDocument(snapshot);
+      final withdrawal = await DataLoadDiagnostics.run(
+        'operations parse linked document ${snapshot.reference.path}',
+        () => CashWithdrawalModel.fromDocument(snapshot),
+      );
       return (
         amountFils: withdrawal.amountFils,
         cancellationReason: operation.type ==
@@ -151,7 +168,10 @@ class FinancialOperationRepository {
         _cashDeposits(storeId).doc(depositId),
       );
       if (!snapshot.exists) return (amountFils: null, cancellationReason: null);
-      final deposit = CashDepositModel.fromDocument(snapshot);
+      final deposit = await DataLoadDiagnostics.run(
+        'operations parse linked document ${snapshot.reference.path}',
+        () => CashDepositModel.fromDocument(snapshot),
+      );
       return (amountFils: deposit.amountFils, cancellationReason: null);
     }
 
@@ -161,5 +181,12 @@ class FinancialOperationRepository {
   Future<DocumentSnapshot<Map<String, dynamic>>> _getRelatedDocument(
     Map<String, Future<DocumentSnapshot<Map<String, dynamic>>>> cache,
     DocumentReference<Map<String, dynamic>> reference,
-  ) => cache.putIfAbsent(reference.path, reference.get);
+  ) => cache.putIfAbsent(
+    reference.path,
+    () => DataLoadDiagnostics.run(
+      'operations read linked document ${reference.path}',
+      reference.get,
+      successDetails: (snapshot) => 'exists=${snapshot.exists}',
+    ),
+  );
 }

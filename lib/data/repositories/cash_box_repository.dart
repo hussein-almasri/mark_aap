@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import '../../core/utils/data_load_diagnostics.dart';
 import '../models/cash_box_models.dart';
 import '../models/cash_deposit_model.dart';
 import '../models/cash_withdrawal_model.dart';
@@ -231,14 +232,31 @@ class CashBoxRepository {
   /// [CashBoxDataException] - a partial balance is never returned.
   Future<CashBoxSnapshot> loadCashBox(String storeId) async {
     final results = await Future.wait([
-      getOpeningBalance(storeId),
-      listDeposits(storeId),
-      _withdrawalRepository.listWithdrawals(storeId),
+      DataLoadDiagnostics.run(
+        'cashBox openingBalance read stores/$storeId/cashBox/openingBalance',
+        () => getOpeningBalance(storeId),
+        successDetails: (balance) => 'exists=${balance != null}',
+      ),
+      DataLoadDiagnostics.run(
+        'cashBox cashDeposits query stores/$storeId/cashDeposits '
+        'orderBy=createdAt',
+        () => listDeposits(storeId),
+        successDetails: (deposits) => 'count=${deposits.length}',
+      ),
+      DataLoadDiagnostics.run(
+        'cashBox cashWithdrawals query stores/$storeId/cashWithdrawals '
+        'orderBy=createdAt',
+        () => _withdrawalRepository.listWithdrawals(storeId),
+        successDetails: (withdrawals) => 'count=${withdrawals.length}',
+      ),
     ]);
-    return CashBoxSnapshot.fromDocuments(
-      openingBalance: results[0] as OpeningBalanceModel?,
-      deposits: results[1] as List<CashDepositModel>,
-      withdrawals: results[2] as List<CashWithdrawalModel>,
+    return DataLoadDiagnostics.run(
+      'cashBox compute summary stores/$storeId',
+      () => CashBoxSnapshot.fromDocuments(
+        openingBalance: results[0] as OpeningBalanceModel?,
+        deposits: results[1] as List<CashDepositModel>,
+        withdrawals: results[2] as List<CashWithdrawalModel>,
+      ),
     );
   }
 }

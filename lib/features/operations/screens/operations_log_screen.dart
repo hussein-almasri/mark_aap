@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart' show Timestamp;
 import 'package:flutter/material.dart';
 
+import '../../../core/utils/data_load_diagnostics.dart';
 import '../../../core/utils/price_amount.dart';
 import '../../../data/models/financial_operation_model.dart';
 import '../../../data/models/user_model.dart';
@@ -44,6 +47,12 @@ class _OperationsLogScreenState extends State<OperationsLogScreen> {
 
   Future<void> _loadOperations() async {
     if (!mounted) return;
+    unawaited(
+      DataLoadDiagnostics.inspectMemberships(
+        user: widget.user,
+        source: 'operationsLog',
+      ),
+    );
     setState(() {
       _isLoading = true;
       _loadError = null;

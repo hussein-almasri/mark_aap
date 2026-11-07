@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
+import '../../../core/utils/data_load_diagnostics.dart';
 import '../../../core/utils/price_amount.dart';
 import '../../../data/models/cash_box_models.dart';
 import '../../../data/models/cash_withdrawal_model.dart';
@@ -47,6 +50,12 @@ class _CashBoxScreenState extends State<CashBoxScreen> {
   }
 
   Future<void> _load() async {
+    unawaited(
+      DataLoadDiagnostics.inspectMemberships(
+        user: widget.user,
+        source: 'cashBox',
+      ),
+    );
     setState(() {
       _loading = true;
       _error = null;
