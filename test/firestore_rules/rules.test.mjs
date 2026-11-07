@@ -1737,6 +1737,10 @@ test('invoice cancellation is Admin-only, preserves history, and does not revers
     status: 'CANCELLED',
     lastOperationId: 'cancel-invoice-op',
   });
+  batch.update(
+    doc(db, 'stores', 'store-1', 'cashWithdrawals', 'invoice_invoice-cancel'),
+    { status: 'CANCELLED' },
+  );
   batch.update(doc(db, 'stores', 'store-1', 'operations', 'cancel-invoice-op'), {
     status: 'COMPLETED',
   });
@@ -1752,7 +1756,7 @@ test('invoice cancellation is Admin-only, preserves history, and does not revers
   );
   assert.equal(invoice.data().status, 'CANCELLED');
   assert.equal(debt.data().status, 'CANCELLED');
-  assert.equal(withdrawal.data().status, 'ACTIVE');
+  assert.equal(withdrawal.data().status, 'CANCELLED');
 
   await seedEmployee();
   const employeeDb = testEnv.authenticatedContext('employee-1').firestore();
