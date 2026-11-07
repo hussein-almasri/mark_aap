@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="LaunchTheme" parent="@android:style/Theme.Light.NoTitleBar">
+        <item name="android:windowBackground">@color/raff_petrol</item>
+        <item name="android:windowSplashScreenBackground">@color/raff_petrol</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/raff_splash_logo</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@color/raff_petrol</item>
+    </style>
+</resources>
