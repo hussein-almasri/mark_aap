@@ -127,6 +127,25 @@ async function createPaymentBaseline(db, overrides = {}) {
   await setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'payment-1'), payment);
 }
 
+async function seedCancelledDebtBaseline(overrides = {}) {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(
+      context.firestore(),
+      'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1',
+    ), {
+      type: 'DEBT',
+      amountFils: 5000,
+      createdAt: serverTimestamp(),
+      createdBy: 'admin-1',
+      status: 'CANCELLED',
+      cancelledAt: serverTimestamp(),
+      cancelledBy: 'admin-1',
+      cancellationReason: 'First cancellation',
+      ...overrides,
+    });
+  });
+}
+
 // Test 36: Invalid cancellationReason is denied
 test('Invalid cancellationReason is denied', async () => {
   const db = testEnv.authenticatedContext('admin-1', {
@@ -134,10 +153,10 @@ test('Invalid cancellationReason is denied', async () => {
   }).firestore();
   await createCustomerBaseline(db);
   await createDebtBaseline(db);
-  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
+  await assertFails(updateDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
     status: 'CANCELLED',
     cancelledBy: 'admin-1',
-    cancellationReason: '',
+    cancellationReason: '   ',
     cancelledAt: serverTimestamp(),
   }));
 });
@@ -149,14 +168,23 @@ test('Invalid cancelledAt is denied', async () => {
   }).firestore();
   await createCustomerBaseline(db);
   await createDebtBaseline(db);
-  // The ruleset only type-checks cancelledAt (any timestamp is accepted, so an
-  // admin may legally backdate a cancellation); the genuinely invalid case is
-  // a non-timestamp value.
-  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
+  await assertFails(updateDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
     status: 'CANCELLED',
     cancelledBy: 'admin-1',
     cancellationReason: 'Test',
     cancelledAt: 'not-a-timestamp',
+  }));
+});
+
+test('Cancellation timestamp must be the server request time', async () => {
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await createCustomerBaseline(db);
+  await createDebtBaseline(db);
+  await assertFails(updateDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
+    status: 'CANCELLED',
+    cancelledBy: 'admin-1',
+    cancellationReason: 'Test',
+    cancelledAt: new Date('2020-01-01'),
   }));
 });
 
@@ -167,16 +195,15 @@ test('Cancellation cannot modify id', async () => {
   }).firestore();
   await createCustomerBaseline(db);
   await createDebtBaseline(db);
-  const originalId = 'debt-1';
-  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', originalId), {
+  await assertFails(updateDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
     status: 'CANCELLED',
     cancelledBy: 'admin-1',
     cancellationReason: 'Test',
     cancelledAt: serverTimestamp(),
-    id: 'modified-id',
+    transactionId: 'modified-id',
   }));
-  const debt = await getDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', originalId));
-  assert.equal(debt.id, originalId);
+  const debt = await getDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'));
+  assert.equal(debt.id, 'debt-1');
 });
 
 // Test 39: Cancellation cannot modify type
@@ -186,7 +213,7 @@ test('Cancellation cannot modify type', async () => {
   }).firestore();
   await createCustomerBaseline(db);
   await createDebtBaseline(db);
-  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
+  await assertFails(updateDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
     status: 'CANCELLED',
     cancelledBy: 'admin-1',
     cancellationReason: 'Test',
@@ -204,7 +231,7 @@ test('Cancellation cannot modify amountFils', async () => {
   }).firestore();
   await createCustomerBaseline(db);
   await createDebtBaseline(db);
-  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
+  await assertFails(updateDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
     status: 'CANCELLED',
     cancelledBy: 'admin-1',
     cancellationReason: 'Test',
@@ -222,7 +249,7 @@ test('Cancellation cannot modify createdAt', async () => {
   }).firestore();
   await createCustomerBaseline(db);
   await createDebtBaseline(db);
-  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
+  await assertFails(updateDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
     status: 'CANCELLED',
     cancelledBy: 'admin-1',
     cancellationReason: 'Test',
@@ -245,7 +272,7 @@ test('Cancellation cannot modify createdBy', async () => {
   }).firestore();
   await createCustomerBaseline(db);
   await createDebtBaseline(db);
-  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
+  await assertFails(updateDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
     status: 'CANCELLED',
     cancelledBy: 'admin-1',
     cancellationReason: 'Test',
@@ -263,7 +290,7 @@ test('Cancellation cannot modify note', async () => {
   }).firestore();
   await createCustomerBaseline(db);
   await createDebtBaseline(db, { note: 'Original note' });
-  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
+  await assertFails(updateDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
     status: 'CANCELLED',
     cancelledBy: 'admin-1',
     cancellationReason: 'Test',
@@ -280,8 +307,8 @@ test('CANCELLED transaction cannot be reactivated', async () => {
     email: 'admin@example.com',
   }).firestore();
   await createCustomerBaseline(db);
-  await createDebtBaseline(db, { status: 'CANCELLED', cancelledBy: 'admin-1', cancellationReason: 'First cancellation' });
-  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
+  await seedCancelledDebtBaseline();
+  await assertFails(updateDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
     status: 'ACTIVE',
   }));
   const debt = await getDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'));
@@ -294,8 +321,14 @@ test('CANCELLED transaction cannot be cancelled again', async () => {
     email: 'admin@example.com',
   }).firestore();
   await createCustomerBaseline(db);
-  await createDebtBaseline(db, { status: 'CANCELLED', cancelledBy: 'admin-1', cancellationReason: 'First cancellation' });
-  await assertFails(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
+  await seedCancelledDebtBaseline();
+  await assertFails(updateDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
+    cancellationReason: 'Changed reason',
+  }));
+  await assertFails(updateDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
+    status: 'CANCELLED',
+    cancelledAt: serverTimestamp(),
+    cancelledBy: 'admin-1',
     cancellationReason: 'Second cancellation',
   }));
   const debt = await getDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'));
@@ -308,7 +341,7 @@ test('Transaction cannot be deleted', async () => {
     email: 'admin@example.com',
   }).firestore();
   await createCustomerBaseline(db);
-  await createDebtBaseline(db, { status: 'CANCELLED', cancelledBy: 'admin-1', cancellationReason: 'First cancellation' });
+  await seedCancelledDebtBaseline();
   await assertFails(deleteDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1')));
 });
 
@@ -529,6 +562,12 @@ test('Employee cannot create debt when debtEnabled is false', async () => {
   const db = testEnv.authenticatedContext('employee-1').firestore();
   await createCustomerBaseline(adminDb, { debtEnabled: false });
   await assertFails(setDoc(TXN(db, 'store-1', 'customer-1', 'debt-emp'), debtPayload('employee-1')));
+});
+
+test('Admin can create debt when debtEnabled is false', async () => {
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await createCustomerBaseline(db, { debtEnabled: false });
+  await assertSucceeds(setDoc(TXN(db, 'store-1', 'customer-1', 'debt-admin'), debtPayload('admin-1')));
 });
 
 // 6.4 Employee may create a PAYMENT regardless of debtEnabled.
@@ -1130,8 +1169,61 @@ test('Admin can cancel a transaction created without cancellation fields', async
   const adminDb = testEnv.authenticatedContext('admin-1').firestore();
   await createCustomerBaseline(adminDb, { debtEnabled: true });
   await createAndReadRaw(adminDb, 'shape-cancel', 'admin-1', 'DEBT');
+  const before = await getDoc(TXN(adminDb, 'store-1', 'customer-1', 'shape-cancel'));
   await repoCancelTxn(adminDb, 'shape-cancel');
   const snap = await getDoc(TXN(adminDb, 'store-1', 'customer-1', 'shape-cancel'));
   assert.equal(snap.data().status, 'CANCELLED');
   assert.equal(snap.data().cancellationReason, 'Phase 4L balance test');
+  for (const key of ['type', 'amountFils', 'createdAt', 'createdBy', 'note']) {
+    assert.deepEqual(snap.data()[key], before.data()[key], `${key} must remain unchanged`);
+  }
+});
+
+test('Transaction creation requires an existing parent customer', async () => {
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertFails(setDoc(TXN(db, 'store-1', 'missing-customer', 'orphan'), debtPayload('admin-1')));
+});
+
+test('Transaction creation requires ACTIVE status and only approved fields', async () => {
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await createCustomerBaseline(db);
+
+  await assertFails(setDoc(TXN(db, 'store-1', 'customer-1', 'cancelled-on-create'), debtPayload(
+    'admin-1',
+    { status: 'CANCELLED' },
+  )));
+  await assertFails(setDoc(TXN(db, 'store-1', 'customer-1', 'extra-field'), debtPayload(
+    'admin-1',
+    { imported: true },
+  )));
+  await assertFails(setDoc(TXN(db, 'store-1', 'customer-1', 'invalid-note'), debtPayload(
+    'admin-1',
+    { note: 123 },
+  )));
+  await assertFails(setDoc(TXN(db, 'store-1', 'customer-1', 'spoofed-creator'), debtPayload(
+    'employee-1',
+  )));
+});
+
+test('Transaction creation accepts a matching transactionId and rejects a mismatch', async () => {
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await createCustomerBaseline(db);
+
+  await assertSucceeds(setDoc(TXN(db, 'store-1', 'customer-1', 'matching-id'), debtPayload(
+    'admin-1',
+    { transactionId: 'matching-id' },
+  )));
+  await assertFails(setDoc(TXN(db, 'store-1', 'customer-1', 'path-id'), debtPayload(
+    'admin-1',
+    { transactionId: 'different-id' },
+  )));
+});
+
+test('Transaction creation rejects a non-integer amountFils', async () => {
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await createCustomerBaseline(db);
+  await assertFails(setDoc(TXN(db, 'store-1', 'customer-1', 'fractional-amount'), debtPayload(
+    'admin-1',
+    { amountFils: 1.5 },
+  )));
 });

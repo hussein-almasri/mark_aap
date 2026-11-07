@@ -2267,24 +2267,42 @@ service cloud.firestore {
       // DEBT only when the customer has debt enabled, and may always record a
       // PAYMENT (matching the customer details screen).
       allow create: if isFinancialStoreMember(storeId)
+        && exists(/databases/$(database)/documents/stores/$(storeId)/customers/$(customerId))
         && (isAdmin(storeId)
           || (request.resource.data.type == 'DEBT'
             && get(/databases/$(database)/documents/stores/$(storeId)/customers/$(customerId)).data.debtEnabled == true)
           || request.resource.data.type == 'PAYMENT')
+        && request.resource.data.keys().hasAll([
+          'type', 'amountFils', 'createdAt', 'createdBy', 'status'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'transactionId', 'type', 'amountFils', 'createdAt',
+          'createdBy', 'status', 'note'
+        ])
         && request.resource.data.type in ['DEBT', 'PAYMENT']
         && request.resource.data.amountFils is int
         && request.resource.data.amountFils > 0
+        && request.resource.data.status == 'ACTIVE'
         && request.resource.data.createdAt == request.time
-        && request.resource.data.createdBy == request.auth.uid;
+        && request.resource.data.createdBy == request.auth.uid
+        && (!('transactionId' in request.resource.data)
+          || request.resource.data.transactionId == transactionId)
+        && (!('note' in request.resource.data)
+          || request.resource.data.note == null
+          || request.resource.data.note is string);
       // Cancellation is admin only, and may only touch the cancellation
       // fields. Immutable fields (id/type/amountFils/createdAt/createdBy/
       // note) must survive a cancellation unchanged.
       allow update: if isAdmin(storeId)
+        && resource.data.status == 'ACTIVE'
+        && !resource.data.keys().hasAny([
+          'cancelledAt', 'cancelledBy', 'cancellationReason'
+        ])
         && request.resource.data.status == 'CANCELLED'
-        && request.resource.data.cancelledAt is timestamp
+        && request.resource.data.cancelledAt == request.time
         && request.resource.data.cancelledBy == request.auth.uid
         && request.resource.data.cancellationReason is string
-        && request.resource.data.cancellationReason != ''
+        && request.resource.data.cancellationReason.trim().size() > 0
         && request.resource.data.diff(resource.data).affectedKeys()
              .hasOnly(['status', 'cancelledAt', 'cancelledBy', 'cancellationReason']);
       allow delete: if false;
