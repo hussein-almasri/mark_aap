@@ -10,12 +10,9 @@ import '../../../data/models/user_model.dart';
 import '../../../data/repositories/purchase_invoice_repository.dart';
 import '../../../data/repositories/user_repository.dart';
 
-/// Read-only detail view of one purchase invoice.
+/// Detail view of one purchase invoice.
 ///
 /// Shows the total, the three-way split, notes, company data, date and status.
-/// Deliberately has **no** cancel button: the cancellation path is not built or
-/// tested yet, so exposing it here would offer an action the rules and
-/// repository cannot yet back.
 class PurchaseInvoiceDetailsScreen extends StatefulWidget {
   const PurchaseInvoiceDetailsScreen({
     required this.user,
@@ -44,7 +41,9 @@ class _PurchaseInvoiceDetailsScreenState
 
   PurchaseInvoiceModel? _invoice;
   bool _isLoading = true;
+  bool _isCancelling = false;
   String? _loadError;
+  String? _cancelError;
 
   /// Resolved display name for the invoice creator, or `null` while loading or
   /// when no name is available.
@@ -131,6 +130,113 @@ class _PurchaseInvoiceDetailsScreenState
     return 'تعذر تحميل الفاتورة. حاول مرة أخرى';
   }
 
+  String _describeCancellationError(Object error) {
+    if (error is ArgumentError) {
+      return 'سبب الإلغاء مطلوب وبحد أقصى 500 حرف';
+    }
+    if (error is InvoiceAlreadyCancelledException ||
+        error is InvoiceNotActiveException) {
+      return 'الفاتورة ملغاة مسبقًا ولا يمكن إلغاؤها مرة أخرى';
+    }
+    if (error is InvoiceNotFoundException) {
+      return 'الفاتورة غير موجودة';
+    }
+    final text = error.toString().toLowerCase();
+    if (text.contains('permission') || text.contains('insufficient')) {
+      return 'لا تملك صلاحية إلغاء هذه الفاتورة';
+    }
+    if (text.contains('unavailable') ||
+        text.contains('network') ||
+        text.contains('timeout')) {
+      return 'تعذر الاتصال بالخادم. تحقق من اتصال الإنترنت';
+    }
+    return 'تعذر إلغاء الفاتورة. لم يتم تأكيد العملية';
+  }
+
+  Future<void> _requestCancellation() async {
+    final invoice = _invoice;
+    if (!widget.user.isAdmin ||
+        invoice == null ||
+        invoice.status != PurchaseInvoiceStatus.active ||
+        _isCancelling) {
+      return;
+    }
+
+    final formKey = GlobalKey<FormState>();
+    var reasonValue = '';
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('إلغاء فاتورة المشتريات'),
+        content: Form(
+          key: formKey,
+          child: TextFormField(
+            autofocus: true,
+            maxLength: 500,
+            maxLines: 3,
+            onSaved: (value) => reasonValue = value?.trim() ?? '',
+            decoration: const InputDecoration(
+              labelText: 'سبب الإلغاء',
+              border: OutlineInputBorder(),
+            ),
+            validator: (value) {
+              if (value == null || value.trim().isEmpty) {
+                return 'أدخل سبب الإلغاء';
+              }
+              return null;
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('رجوع'),
+          ),
+          FilledButton(
+            onPressed: () {
+              if (formKey.currentState!.validate()) {
+                formKey.currentState!.save();
+                Navigator.of(dialogContext).pop(reasonValue);
+              }
+            },
+            child: const Text('تأكيد الإلغاء'),
+          ),
+        ],
+      ),
+    );
+    if (reason == null || !mounted) return;
+
+    setState(() {
+      _isCancelling = true;
+      _cancelError = null;
+    });
+    try {
+      await _repository.cancelInvoice(
+        storeId: widget.user.storeId,
+        invoiceId: widget.invoiceId,
+        operationId: _repository.newOperationId(widget.user.storeId),
+        cancelledBy: widget.user.uid,
+        reason: reason,
+      );
+      await _loadInvoice();
+      if (mounted && _loadError == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('تم إلغاء الفاتورة بنجاح')),
+        );
+      }
+    } catch (error) {
+      if (!mounted) return;
+      if (error is InvoiceAlreadyCancelledException) {
+        await _loadInvoice();
+      }
+      if (mounted) {
+        setState(() => _cancelError = _describeCancellationError(error));
+      }
+    } finally {
+      if (mounted) setState(() => _isCancelling = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -170,6 +276,32 @@ class _PurchaseInvoiceDetailsScreenState
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _buildHeaderCard(invoice, isActive),
+          if (widget.user.isAdmin && isActive) ...[
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _isCancelling ? null : _requestCancellation,
+                icon: _isCancelling
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.cancel_outlined),
+                label: Text(
+                  _isCancelling ? 'جارٍ إلغاء الفاتورة...' : 'إلغاء الفاتورة',
+                ),
+              ),
+            ),
+          ],
+          if (_cancelError != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              _cancelError!,
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
+          ],
           const SizedBox(height: 16),
           _buildSplitCard(invoice),
           if (invoice.notes != null && invoice.notes!.isNotEmpty) ...[
@@ -222,10 +354,12 @@ class _PurchaseInvoiceDetailsScreenState
               Icons.calendar_today_outlined,
               'التاريخ: ${_formatDate(invoice.createdAt)}',
             ),
-            _infoRow(
-              Icons.person_outline,
-              'أُنشئت بواسطة: ${_creatorLabel()}',
-            ),
+            _infoRow(Icons.person_outline, 'أُنشئت بواسطة: ${_creatorLabel()}'),
+            if (!isActive && invoice.cancellationReason != null)
+              _infoRow(
+                Icons.info_outline,
+                'سبب الإلغاء: ${invoice.cancellationReason}',
+              ),
           ],
         ),
       ),
@@ -287,12 +421,16 @@ class _PurchaseInvoiceDetailsScreenState
         Expanded(
           child: Text(
             label,
-            style: TextStyle(fontWeight: bold ? FontWeight.w700 : FontWeight.w400),
+            style: TextStyle(
+              fontWeight: bold ? FontWeight.w700 : FontWeight.w400,
+            ),
           ),
         ),
         Text(
           PriceAmount.formatJod2(fils),
-          style: TextStyle(fontWeight: bold ? FontWeight.w700 : FontWeight.w500),
+          style: TextStyle(
+            fontWeight: bold ? FontWeight.w700 : FontWeight.w500,
+          ),
         ),
       ],
     ),

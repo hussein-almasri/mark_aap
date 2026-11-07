@@ -14,6 +14,9 @@ class _FakeInvoiceRepository implements PurchaseInvoiceRepository {
   _FakeInvoiceRepository(this.invoice);
 
   PurchaseInvoiceModel invoice;
+  final cancellationCalls =
+      <({String operationId, String cancelledBy, String reason})>[];
+  Object? cancellationError;
 
   @override
   CollectionReference<Map<String, dynamic>> purchaseInvoices(String storeId) =>
@@ -57,8 +60,7 @@ class _FakeInvoiceRepository implements PurchaseInvoiceRepository {
     required List<String> photoIds,
     required String createdBy,
     required String operationId,
-  }) =>
-      throw UnimplementedError();
+  }) => throw UnimplementedError();
 
   @override
   Future<void> cancelInvoice({
@@ -67,8 +69,19 @@ class _FakeInvoiceRepository implements PurchaseInvoiceRepository {
     required String operationId,
     required String cancelledBy,
     required String reason,
-  }) =>
-      throw UnimplementedError();
+  }) async {
+    if (cancellationError case final error?) throw error;
+    cancellationCalls.add((
+      operationId: operationId,
+      cancelledBy: cancelledBy,
+      reason: reason,
+    ));
+    invoice = _invoice(
+      createdBy: invoice.createdBy,
+      status: PurchaseInvoiceStatus.cancelled,
+      cancellationReason: reason,
+    );
+  }
 }
 
 class _FakeUserRepository implements UserRepository {
@@ -123,7 +136,20 @@ const _viewer = UserModel(
 /// A UID-looking string so tests can assert it is never rendered.
 const _creatorUid = 'Xk9mP2qR7sT4uV8wY1zA3bC5dE6fG7hI';
 
-PurchaseInvoiceModel _invoice({String? createdBy}) => PurchaseInvoiceModel(
+const _employee = UserModel(
+  uid: 'employee-1',
+  storeId: 'store-1',
+  name: 'Employee',
+  email: 'employee@example.com',
+  role: 'EMPLOYEE',
+  isActive: true,
+);
+
+PurchaseInvoiceModel _invoice({
+  String? createdBy,
+  PurchaseInvoiceStatus status = PurchaseInvoiceStatus.active,
+  String? cancellationReason,
+}) => PurchaseInvoiceModel(
   invoiceId: 'inv-1',
   companyId: 'company-1',
   companyName: 'Active Supplier',
@@ -131,11 +157,19 @@ PurchaseInvoiceModel _invoice({String? createdBy}) => PurchaseInvoiceModel(
   shopCashAmountFils: 60000,
   outsideCashAmountFils: 40000,
   supplierDebtAmountFils: 0,
-  status: PurchaseInvoiceStatus.active,
+  status: status,
   createdAt: Timestamp.fromMillisecondsSinceEpoch(1728000000000),
   createdBy: createdBy ?? _creatorUid,
   operationId: 'inv-1',
   photoIds: const [],
+  cancelledAt: status == PurchaseInvoiceStatus.cancelled
+      ? Timestamp.fromMillisecondsSinceEpoch(1728000001000)
+      : null,
+  cancelledBy: status == PurchaseInvoiceStatus.cancelled ? 'admin-1' : null,
+  cancellationReason: cancellationReason,
+  cancellationOperationId: status == PurchaseInvoiceStatus.cancelled
+      ? 'cancel-op-1'
+      : null,
 );
 
 Widget _screen({
@@ -240,5 +274,100 @@ void main() {
     }
     expect(users.getDisplayNameCalls, 1);
     expect(find.text('أُنشئت بواسطة: أحمد الموظف'), findsOneWidget);
+  });
+
+  testWidgets('admin can cancel an active invoice with a required reason', (
+    tester,
+  ) async {
+    final invoices = _FakeInvoiceRepository(_invoice());
+    await tester.pumpWidget(
+      _screen(
+        invoices: invoices,
+        users: _FakeUserRepository(name: 'أحمد'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('إلغاء الفاتورة'), findsOneWidget);
+    await tester.tap(find.text('إلغاء الفاتورة'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('تأكيد الإلغاء'));
+    await tester.pumpAndSettle();
+    expect(find.text('أدخل سبب الإلغاء'), findsOneWidget);
+    expect(invoices.cancellationCalls, isEmpty);
+
+    await tester.enterText(find.byType(TextFormField), ' تصحيح إدخال ');
+    await tester.tap(find.text('تأكيد الإلغاء'));
+    await tester.pumpAndSettle();
+
+    expect(invoices.cancellationCalls, [
+      (operationId: 'op-1', cancelledBy: 'viewer-1', reason: 'تصحيح إدخال'),
+    ]);
+    expect(find.text('ملغاة'), findsOneWidget);
+    expect(find.text('سبب الإلغاء: تصحيح إدخال'), findsOneWidget);
+    expect(find.text('إلغاء الفاتورة'), findsNothing);
+  });
+
+  testWidgets('employee cannot see the invoice cancellation action', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PurchaseInvoiceDetailsScreen(
+          user: _employee,
+          invoiceId: 'inv-1',
+          repository: _FakeInvoiceRepository(_invoice()),
+          userRepository: _FakeUserRepository(name: 'أحمد'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('إلغاء الفاتورة'), findsNothing);
+  });
+
+  testWidgets('cancelled invoice shows its reason without a cancel action', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _screen(
+        invoices: _FakeInvoiceRepository(
+          _invoice(
+            status: PurchaseInvoiceStatus.cancelled,
+            cancellationReason: 'فاتورة مكررة',
+          ),
+        ),
+        users: _FakeUserRepository(name: 'أحمد'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('ملغاة'), findsOneWidget);
+    expect(find.text('سبب الإلغاء: فاتورة مكررة'), findsOneWidget);
+    expect(find.text('إلغاء الفاتورة'), findsNothing);
+  });
+
+  testWidgets('shows an explicit message when cancellation is rejected', (
+    tester,
+  ) async {
+    final invoices = _FakeInvoiceRepository(_invoice())
+      ..cancellationError = StateError('permission denied');
+    await tester.pumpWidget(
+      _screen(
+        invoices: invoices,
+        users: _FakeUserRepository(name: 'أحمد'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('إلغاء الفاتورة'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextFormField), 'غير صحيح');
+    await tester.tap(find.text('تأكيد الإلغاء'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('لا تملك صلاحية إلغاء هذه الفاتورة'), findsOneWidget);
+    expect(find.text('نشطة'), findsOneWidget);
+    expect(invoices.cancellationCalls, isEmpty);
   });
 }

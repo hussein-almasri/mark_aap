@@ -186,13 +186,23 @@ test('an admin records a manual withdrawal atomically with its operation', async
   assert.equal(operation.data().withdrawalId, 'wd-1');
 });
 
-test('an employee can record a manual withdrawal', async () => {
+test('an employee cannot record a manual withdrawal', async () => {
   const db = testEnv.authenticatedContext(employeeUid).firestore();
   const result = await attempt(db, () => createManualWithdrawal(db, {
     createdBy: employeeUid,
   }));
   console.log('M2 employee create:', JSON.stringify(result));
-  assert.equal(result.ok, true);
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'permission-denied');
+
+  const withdrawal = await getDoc(
+    doc(db, 'stores', storeId, 'cashWithdrawals', 'wd-1'),
+  );
+  const operation = await getDoc(
+    doc(db, 'stores', storeId, 'operations', 'op-wd-1'),
+  );
+  assert.equal(withdrawal.exists(), false);
+  assert.equal(operation.exists(), false);
 });
 
 test('a non-member of the store is denied', async () => {

@@ -1102,7 +1102,7 @@ service cloud.firestore {
 
       // A manual withdrawal may not claim a link to an invoice or a supplier
       // payment: those keys are absent from the exact allowed key set.
-      return isFinancialStoreMember(storeId)
+      return isAdmin(storeId)
         && validManualWithdrawalKeys(data)
         && data.withdrawalId is string
         && data.withdrawalId == withdrawalId
@@ -2053,12 +2053,15 @@ service cloud.firestore {
         // A member may always read an operation that does not exist yet: the
         // manual-withdrawal save reads it inside its transaction to gate a
         // retry, and a missing document leaks nothing. Existing operations
-        // stay restricted to their author or an admin.
+        // stay restricted to their author or an admin. List queries must
+        // constrain employee results to their own createdBy value.
         allow get: if isFinancialStoreMember(storeId)
           && (resource == null
             || resource.data.createdBy == request.auth.uid
             || isAdmin(storeId));
-        allow list: if false;
+        allow list: if isFinancialStoreMember(storeId)
+          && (isAdmin(storeId)
+            || resource.data.createdBy == request.auth.uid);
         allow create: if validOperationCreate(storeId, operationId);
         allow update: if validOperationCompletion(storeId, operationId);
         allow delete: if false;

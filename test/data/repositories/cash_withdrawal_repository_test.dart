@@ -34,21 +34,20 @@ CashWithdrawalModel manualWithdrawal({
   String? cancelledBy,
   String? cancellationReason,
   String? cancellationOperationId,
-}) =>
-    CashWithdrawalModel(
-      withdrawalId: withdrawalId,
-      amountFils: amountFils,
-      type: type,
-      createdAt: createdAt ?? Timestamp.fromDate(DateTime.utc(2026, 1, 2)),
-      createdBy: createdBy,
-      status: status,
-      note: note,
-      operationId: operationId,
-      cancelledAt: cancelledAt,
-      cancelledBy: cancelledBy,
-      cancellationReason: cancellationReason,
-      cancellationOperationId: cancellationOperationId,
-    );
+}) => CashWithdrawalModel(
+  withdrawalId: withdrawalId,
+  amountFils: amountFils,
+  type: type,
+  createdAt: createdAt ?? Timestamp.fromDate(DateTime.utc(2026, 1, 2)),
+  createdBy: createdBy,
+  status: status,
+  note: note,
+  operationId: operationId,
+  cancelledAt: cancelledAt,
+  cancelledBy: cancelledBy,
+  cancellationReason: cancellationReason,
+  cancellationOperationId: cancellationOperationId,
+);
 
 void main() {
   final String? firestoreSkip = _firestoreUnavailableReason();
@@ -64,8 +63,10 @@ void main() {
 
     test('accepts a reason of exactly 500 characters', () {
       final String reason = 'x' * 500;
-      expect(CashWithdrawalRepository.validateCancellationReason(reason),
-          reason);
+      expect(
+        CashWithdrawalRepository.validateCancellationReason(reason),
+        reason,
+      );
     });
 
     test('rejects an empty reason', () {
@@ -100,9 +101,10 @@ void main() {
   group('CashWithdrawalModel cancellation and operation data', () {
     test('keeps operationId and note through toData/fromData', () {
       final CashWithdrawalModel model = manualWithdrawal();
-      final CashWithdrawalModel roundTrip =
-          CashWithdrawalModel.fromData(
-              withdrawalId: model.withdrawalId, data: model.toData());
+      final CashWithdrawalModel roundTrip = CashWithdrawalModel.fromData(
+        withdrawalId: model.withdrawalId,
+        data: model.toData(),
+      );
 
       expect(roundTrip.operationId, 'op-wd-1');
       expect(roundTrip.note, 'Electricity bill');
@@ -116,7 +118,9 @@ void main() {
     });
 
     test('keeps cancellation fields through toData/fromData', () {
-      final Timestamp cancelledAt = Timestamp.fromDate(DateTime.utc(2026, 1, 3));
+      final Timestamp cancelledAt = Timestamp.fromDate(
+        DateTime.utc(2026, 1, 3),
+      );
       final CashWithdrawalModel model = manualWithdrawal(
         status: CashWithdrawalStatus.cancelled,
         cancelledAt: cancelledAt,
@@ -124,9 +128,10 @@ void main() {
         cancellationReason: 'Wrong amount entered',
         cancellationOperationId: 'op-cancel-1',
       );
-      final CashWithdrawalModel roundTrip =
-          CashWithdrawalModel.fromData(
-              withdrawalId: model.withdrawalId, data: model.toData());
+      final CashWithdrawalModel roundTrip = CashWithdrawalModel.fromData(
+        withdrawalId: model.withdrawalId,
+        data: model.toData(),
+      );
 
       expect(roundTrip.status, CashWithdrawalStatus.cancelled);
       expect(roundTrip.cancelledAt, cancelledAt);
@@ -203,8 +208,7 @@ void main() {
   });
 
   group('CashWithdrawalRepository manual withdrawal scenarios', () {
-    test(
-        'creates a manual withdrawal with the right amount and note and pairs '
+    test('creates a manual withdrawal with the right amount and note and pairs '
         'it with its CREATE_MANUAL_WITHDRAWAL operation', () async {
       final CashWithdrawalRepository repo = CashWithdrawalRepository();
 
@@ -218,8 +222,10 @@ void main() {
         note: 'Electricity bill',
       );
 
-      final CashWithdrawalModel withdrawal =
-          await repo.getWithdrawal('store-1', 'wd-create-1');
+      final CashWithdrawalModel withdrawal = await repo.getWithdrawal(
+        'store-1',
+        'wd-create-1',
+      );
       expect(withdrawal.amountFils, 25000);
       expect(withdrawal.type, CashWithdrawalType.electricity);
       expect(withdrawal.source, SupplierPaymentSource.shopCash);
@@ -229,8 +235,10 @@ void main() {
       expect(withdrawal.invoiceId, isNull);
       expect(withdrawal.supplierPaymentId, isNull);
 
-      final DocumentSnapshot<Map<String, dynamic>> operation =
-          await repo.operations('store-1').doc('op-create-1').get();
+      final DocumentSnapshot<Map<String, dynamic>> operation = await repo
+          .operations('store-1')
+          .doc('op-create-1')
+          .get();
       expect(operation.exists, isTrue);
       expect(operation.data()!['type'], 'CREATE_MANUAL_WITHDRAWAL');
       expect(operation.data()!['withdrawalId'], 'wd-create-1');
@@ -249,8 +257,10 @@ void main() {
         operationId: 'op-no-note-1',
       );
 
-      final CashWithdrawalModel withdrawal =
-          await repo.getWithdrawal('store-1', 'wd-no-note-1');
+      final CashWithdrawalModel withdrawal = await repo.getWithdrawal(
+        'store-1',
+        'wd-no-note-1',
+      );
       expect(withdrawal.note, isNull);
     });
 
@@ -297,8 +307,7 @@ void main() {
       );
     });
 
-    test(
-        'rejects a cancellation reason that is empty, untrimmed or longer '
+    test('rejects a cancellation reason that is empty, untrimmed or longer '
         'than 500 characters', () async {
       final CashWithdrawalRepository repo = CashWithdrawalRepository();
       await repo.createManualWithdrawal(
@@ -323,44 +332,49 @@ void main() {
         );
       }
 
-      final CashWithdrawalModel withdrawal =
-          await repo.getWithdrawal('store-1', 'wd-bad-reason-1');
+      final CashWithdrawalModel withdrawal = await repo.getWithdrawal(
+        'store-1',
+        'wd-bad-reason-1',
+      );
       expect(withdrawal.status, CashWithdrawalStatus.active);
     });
 
-    test('reusing an operationId does not record a second withdrawal',
-        () async {
-      final CashWithdrawalRepository repo = CashWithdrawalRepository();
+    test(
+      'reusing an operationId does not record a second withdrawal',
+      () async {
+        final CashWithdrawalRepository repo = CashWithdrawalRepository();
 
-      await repo.createManualWithdrawal(
-        storeId: 'store-1',
-        amountFils: 150,
-        type: CashWithdrawalType.billPayment,
-        withdrawalId: 'wd-idem-1',
-        createdBy: 'admin-1',
-        operationId: 'op-idem-1',
-      );
-
-      await expectLater(
-        repo.createManualWithdrawal(
+        await repo.createManualWithdrawal(
           storeId: 'store-1',
           amountFils: 150,
           type: CashWithdrawalType.billPayment,
           withdrawalId: 'wd-idem-1',
           createdBy: 'admin-1',
           operationId: 'op-idem-1',
-        ),
-        throwsA(isA<CashWithdrawalMismatchException>()),
-      );
+        );
 
-      final CashWithdrawalModel withdrawal =
-          await repo.getWithdrawal('store-1', 'wd-idem-1');
-      expect(withdrawal.amountFils, 150);
-      expect(withdrawal.operationId, 'op-idem-1');
-    });
+        await expectLater(
+          repo.createManualWithdrawal(
+            storeId: 'store-1',
+            amountFils: 150,
+            type: CashWithdrawalType.billPayment,
+            withdrawalId: 'wd-idem-1',
+            createdBy: 'admin-1',
+            operationId: 'op-idem-1',
+          ),
+          throwsA(isA<CashWithdrawalMismatchException>()),
+        );
 
-    test(
-        'cancels with a valid reason and keeps operationId and '
+        final CashWithdrawalModel withdrawal = await repo.getWithdrawal(
+          'store-1',
+          'wd-idem-1',
+        );
+        expect(withdrawal.amountFils, 150);
+        expect(withdrawal.operationId, 'op-idem-1');
+      },
+    );
+
+    test('cancels with a valid reason and keeps operationId and '
         'cancellationOperationId on the saved and re-read document', () async {
       final CashWithdrawalRepository repo = CashWithdrawalRepository();
       await repo.createManualWithdrawal(
@@ -380,8 +394,10 @@ void main() {
         reason: 'Payment processed differently',
       );
 
-      final CashWithdrawalModel withdrawal =
-          await repo.getWithdrawal('store-1', 'wd-cancel-1');
+      final CashWithdrawalModel withdrawal = await repo.getWithdrawal(
+        'store-1',
+        'wd-cancel-1',
+      );
       expect(withdrawal.status, CashWithdrawalStatus.cancelled);
       expect(withdrawal.operationId, 'op-create-cancel-1');
       expect(withdrawal.cancellationOperationId, 'op-cancel-1');
@@ -389,55 +405,61 @@ void main() {
       expect(withdrawal.cancellationReason, 'Payment processed differently');
       expect(withdrawal.cancelledAt, isNotNull);
 
-      final DocumentSnapshot<Map<String, dynamic>> operation =
-          await repo.operations('store-1').doc('op-cancel-1').get();
+      final DocumentSnapshot<Map<String, dynamic>> operation = await repo
+          .operations('store-1')
+          .doc('op-cancel-1')
+          .get();
       expect(operation.exists, isTrue);
       expect(operation.data()!['type'], 'CANCEL_MANUAL_WITHDRAWAL');
       expect(operation.data()!['withdrawalId'], 'wd-cancel-1');
       expect(operation.data()!['status'], 'COMPLETED');
     });
 
-    // Admin-only enforcement lives in the Firestore rules (a second raw
-    // cancel write is refused by them); the repository itself is a no-op on
-    // an already cancelled withdrawal.
-    test('a second cancel is a no-op that keeps the first cancellation',
-        () async {
-      final CashWithdrawalRepository repo = CashWithdrawalRepository();
-      await repo.createManualWithdrawal(
-        storeId: 'store-1',
-        amountFils: 400,
-        type: CashWithdrawalType.electricity,
-        withdrawalId: 'wd-cancel-2',
-        createdBy: 'admin-1',
-        operationId: 'op-create-cancel-2',
-      );
-      await repo.cancelWithdrawal(
-        storeId: 'store-1',
-        withdrawalId: 'wd-cancel-2',
-        operationId: 'op-cancel-2a',
-        cancelledBy: 'admin-2',
-        reason: 'First cancellation',
-      );
+    test(
+      'a second cancel is refused and keeps the first cancellation',
+      () async {
+        final CashWithdrawalRepository repo = CashWithdrawalRepository();
+        await repo.createManualWithdrawal(
+          storeId: 'store-1',
+          amountFils: 400,
+          type: CashWithdrawalType.electricity,
+          withdrawalId: 'wd-cancel-2',
+          createdBy: 'admin-1',
+          operationId: 'op-create-cancel-2',
+        );
+        await repo.cancelWithdrawal(
+          storeId: 'store-1',
+          withdrawalId: 'wd-cancel-2',
+          operationId: 'op-cancel-2a',
+          cancelledBy: 'admin-2',
+          reason: 'First cancellation',
+        );
 
-      await repo.cancelWithdrawal(
-        storeId: 'store-1',
-        withdrawalId: 'wd-cancel-2',
-        operationId: 'op-cancel-2b',
-        cancelledBy: 'admin-3',
-        reason: 'Second cancellation attempt',
-      );
+        await expectLater(
+          repo.cancelWithdrawal(
+            storeId: 'store-1',
+            withdrawalId: 'wd-cancel-2',
+            operationId: 'op-cancel-2b',
+            cancelledBy: 'admin-3',
+            reason: 'Second cancellation attempt',
+          ),
+          throwsA(isA<CashWithdrawalAlreadyCancelledException>()),
+        );
 
-      final CashWithdrawalModel withdrawal =
-          await repo.getWithdrawal('store-1', 'wd-cancel-2');
-      expect(withdrawal.status, CashWithdrawalStatus.cancelled);
-      expect(withdrawal.cancellationOperationId, 'op-cancel-2a');
-      expect(withdrawal.cancelledBy, 'admin-2');
-      expect(withdrawal.cancellationReason, 'First cancellation');
+        final CashWithdrawalModel withdrawal = await repo.getWithdrawal(
+          'store-1',
+          'wd-cancel-2',
+        );
+        expect(withdrawal.status, CashWithdrawalStatus.cancelled);
+        expect(withdrawal.cancellationOperationId, 'op-cancel-2a');
+        expect(withdrawal.cancelledBy, 'admin-2');
+        expect(withdrawal.cancellationReason, 'First cancellation');
 
-      final DocumentSnapshot<Map<String, dynamic>> secondOperation =
-          await repo.operations('store-1').doc('op-cancel-2b').get();
-      expect(secondOperation.exists, isFalse);
-    });
+        final DocumentSnapshot<Map<String, dynamic>> secondOperation =
+            await repo.operations('store-1').doc('op-cancel-2b').get();
+        expect(secondOperation.exists, isFalse);
+      },
+    );
 
     test('cancelling a missing withdrawal is refused', () async {
       final CashWithdrawalRepository repo = CashWithdrawalRepository();
@@ -475,30 +497,34 @@ void main() {
           operationId: 'op-type-${type.value}',
         );
 
-        final CashWithdrawalModel withdrawal =
-            await repo.getWithdrawal('store-1', 'wd-type-${type.value}');
+        final CashWithdrawalModel withdrawal = await repo.getWithdrawal(
+          'store-1',
+          'wd-type-${type.value}',
+        );
         expect(withdrawal.type, type);
         expect(withdrawal.status, CashWithdrawalStatus.active);
       }
     });
 
-    test('listWithdrawals returns the created withdrawals in createdAt order',
-        () async {
-      final CashWithdrawalRepository repo = CashWithdrawalRepository();
-      for (int i = 0; i < 3; i++) {
-        await repo.createManualWithdrawal(
-          storeId: 'store-1',
-          amountFils: 100 * (i + 1),
-          type: CashWithdrawalType.personalExpense,
-          withdrawalId: 'wd-list-$i',
-          createdBy: 'admin-1',
-          operationId: 'op-list-$i',
-        );
-      }
+    test(
+      'listWithdrawals returns the created withdrawals in createdAt order',
+      () async {
+        final CashWithdrawalRepository repo = CashWithdrawalRepository();
+        for (int i = 0; i < 3; i++) {
+          await repo.createManualWithdrawal(
+            storeId: 'store-1',
+            amountFils: 100 * (i + 1),
+            type: CashWithdrawalType.personalExpense,
+            withdrawalId: 'wd-list-$i',
+            createdBy: 'admin-1',
+            operationId: 'op-list-$i',
+          );
+        }
 
-      final List<CashWithdrawalModel> withdrawals =
-          await repo.listWithdrawals('store-1');
-      expect(withdrawals.length, 3);
-    });
+        final List<CashWithdrawalModel> withdrawals = await repo
+            .listWithdrawals('store-1');
+        expect(withdrawals.length, 3);
+      },
+    );
   }, skip: firestoreSkip);
 }

@@ -21,6 +21,18 @@ class CashWithdrawalMismatchException implements Exception {
   String toString() => 'CashWithdrawalMismatchException';
 }
 
+class CashWithdrawalAlreadyCancelledException implements Exception {
+  const CashWithdrawalAlreadyCancelledException();
+  @override
+  String toString() => 'CashWithdrawalAlreadyCancelledException';
+}
+
+class CashWithdrawalNotManualException implements Exception {
+  const CashWithdrawalNotManualException();
+  @override
+  String toString() => 'CashWithdrawalNotManualException';
+}
+
 class CashWithdrawalRepository {
   CashWithdrawalRepository({FirebaseFirestore? firestore})
     : _firestore = firestore ?? FirebaseFirestore.instance;
@@ -33,6 +45,10 @@ class CashWithdrawalRepository {
 
   CollectionReference<Map<String, dynamic>> operations(String storeId) =>
       _firestore.collection('stores').doc(storeId).collection('operations');
+
+  String newOperationId(String storeId) => operations(storeId).doc().id;
+
+  String newWithdrawalId(String storeId) => cashWithdrawals(storeId).doc().id;
 
   Future<CashWithdrawalModel> getWithdrawal(String storeId, String withdrawalId) async {
     final snapshot =
@@ -137,8 +153,8 @@ class CashWithdrawalRepository {
   }
 
   /// Admin-only cancellation of a cash withdrawal.
-  /// Preserves the withdrawal document, marks CANCELLED, records metadata,
-  /// and creates the cancellation operation atomically.
+  /// Preserves the manual withdrawal document, marks CANCELLED, records
+  /// metadata, and creates the cancellation operation atomically.
   Future<void> cancelWithdrawal({
     required String storeId,
     required String withdrawalId,
@@ -148,7 +164,6 @@ class CashWithdrawalRepository {
   }) async {
     validateCancellationReason(reason);
     return await _firestore.runTransaction((Transaction transaction) async {
-      // Read the withdrawal document
       final withdrawalRef = cashWithdrawals(storeId).doc(withdrawalId);
       final withdrawalSnapshot = await transaction.get(withdrawalRef);
 
@@ -156,15 +171,24 @@ class CashWithdrawalRepository {
         throw CashWithdrawalNotFoundException();
       }
 
-      // Check cancellation is not already applied
-      final existingData = withdrawalSnapshot.data()!;
-      final currentStatus = existingData['status'] as String;
-      if (currentStatus == 'CANCELLED') {
-        // Already cancelled - do not re-execute
-        return;
+      final withdrawal = CashWithdrawalModel.fromDocument(withdrawalSnapshot);
+      if (withdrawal.status == CashWithdrawalStatus.cancelled) {
+        throw const CashWithdrawalAlreadyCancelledException();
+      }
+      if (withdrawal.type == CashWithdrawalType.purchaseInvoice ||
+          withdrawal.invoiceId != null ||
+          withdrawal.supplierPaymentId != null ||
+          withdrawal.source != SupplierPaymentSource.shopCash ||
+          withdrawal.operationId == null) {
+        throw const CashWithdrawalNotManualException();
       }
 
-      // 2. Update the withdrawal status to CANCELLED
+      final operationRef = operations(storeId).doc(operationId);
+      final existingOperation = await transaction.get(operationRef);
+      if (existingOperation.exists) {
+        throw CashWithdrawalMismatchException();
+      }
+
       transaction.update(withdrawalRef, {
         'status': 'CANCELLED',
         'cancelledBy': cancelledBy,
@@ -173,22 +197,15 @@ class CashWithdrawalRepository {
         'cancellationOperationId': operationId,
       });
 
-      // 3. Create the cancellation operation/idempotency record atomically
-      final opRef = operations(storeId).doc(operationId);
-      final existingOperation = await transaction.get(opRef);
-
-      if (!existingOperation.exists) {
-        transaction.set(opRef, {
-          'operationId': operationId,
-          'type': 'CANCEL_MANUAL_WITHDRAWAL',
-          'withdrawalId': withdrawalId,
-          'createdBy': cancelledBy,
-          'createdAt': FieldValue.serverTimestamp(),
-          'status': 'COMPLETED',
-          'retryCount': 0,
-        });
-      }
-      // If operation already exists, do not overwrite (idempotent)
+      transaction.set(operationRef, {
+        'operationId': operationId,
+        'type': 'CANCEL_MANUAL_WITHDRAWAL',
+        'withdrawalId': withdrawalId,
+        'createdBy': cancelledBy,
+        'createdAt': FieldValue.serverTimestamp(),
+        'status': 'COMPLETED',
+        'retryCount': 0,
+      });
     });
   }
 }

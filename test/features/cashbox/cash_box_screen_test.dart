@@ -7,6 +7,7 @@ import 'package:mark_aap/data/models/cash_deposit_model.dart';
 import 'package:mark_aap/data/models/cash_withdrawal_model.dart';
 import 'package:mark_aap/data/models/user_model.dart';
 import 'package:mark_aap/data/repositories/cash_box_repository.dart';
+import 'package:mark_aap/data/repositories/cash_withdrawal_repository.dart';
 import 'package:mark_aap/features/cashbox/cash_box_screen.dart';
 
 class _FakeCashBoxRepository implements CashBoxRepository {
@@ -101,6 +102,120 @@ class _FakeCashBoxRepository implements CashBoxRepository {
   }
 }
 
+class _FakeCashWithdrawalRepository implements CashWithdrawalRepository {
+  _FakeCashWithdrawalRepository(this.cashBox);
+
+  final _FakeCashBoxRepository cashBox;
+  final createCalls = <Map<String, dynamic>>[];
+  final cancelCalls = <Map<String, dynamic>>[];
+  Object? createError;
+  Object? cancelError;
+
+  @override
+  CollectionReference<Map<String, dynamic>> cashWithdrawals(String storeId) =>
+      throw UnimplementedError();
+
+  @override
+  CollectionReference<Map<String, dynamic>> operations(String storeId) =>
+      throw UnimplementedError();
+
+  @override
+  String newOperationId(String storeId) => 'withdrawal-operation-1';
+
+  @override
+  String newWithdrawalId(String storeId) => 'withdrawal-1';
+
+  @override
+  Future<CashWithdrawalModel> getWithdrawal(
+    String storeId,
+    String withdrawalId,
+  ) => throw UnimplementedError();
+
+  @override
+  Future<List<CashWithdrawalModel>> listWithdrawals(String storeId) =>
+      throw UnimplementedError();
+
+  @override
+  Future<String> createManualWithdrawal({
+    required String storeId,
+    required int amountFils,
+    required CashWithdrawalType type,
+    required String withdrawalId,
+    required String createdBy,
+    required String operationId,
+    String? note,
+  }) async {
+    if (createError case final error?) throw error;
+    createCalls.add({
+      'storeId': storeId,
+      'amountFils': amountFils,
+      'type': type,
+      'withdrawalId': withdrawalId,
+      'createdBy': createdBy,
+      'operationId': operationId,
+      'note': note,
+    });
+    final snapshot = cashBox.snapshot!;
+    final withdrawals = [
+      ...snapshot.withdrawals,
+      CashWithdrawalModel(
+        withdrawalId: withdrawalId,
+        amountFils: amountFils,
+        type: type,
+        createdAt: Timestamp.fromMillisecondsSinceEpoch(3000),
+        createdBy: createdBy,
+        status: CashWithdrawalStatus.active,
+        note: note,
+        operationId: operationId,
+      ),
+    ];
+    cashBox.snapshot = CashBoxSnapshot.fromDocuments(
+      openingBalance: snapshot.openingBalance,
+      deposits: snapshot.deposits,
+      withdrawals: withdrawals,
+    );
+    return withdrawalId;
+  }
+
+  @override
+  Future<void> cancelWithdrawal({
+    required String storeId,
+    required String withdrawalId,
+    required String operationId,
+    required String cancelledBy,
+    required String reason,
+  }) async {
+    if (cancelError case final error?) throw error;
+    cancelCalls.add({
+      'storeId': storeId,
+      'withdrawalId': withdrawalId,
+      'operationId': operationId,
+      'cancelledBy': cancelledBy,
+      'reason': reason,
+    });
+    final snapshot = cashBox.snapshot!;
+    final withdrawals = snapshot.withdrawals.map((withdrawal) {
+      if (withdrawal.withdrawalId != withdrawalId) return withdrawal;
+      return CashWithdrawalModel.fromData(
+        withdrawalId: withdrawal.withdrawalId,
+        data: {
+          ...withdrawal.toData(),
+          'status': 'CANCELLED',
+          'cancelledAt': Timestamp.fromMillisecondsSinceEpoch(4000),
+          'cancelledBy': cancelledBy,
+          'cancellationReason': reason,
+          'cancellationOperationId': operationId,
+        },
+      );
+    }).toList();
+    cashBox.snapshot = CashBoxSnapshot.fromDocuments(
+      openingBalance: snapshot.openingBalance,
+      deposits: snapshot.deposits,
+      withdrawals: withdrawals,
+    );
+  }
+}
+
 const _admin = UserModel(
   uid: 'admin-1',
   storeId: 'store-1',
@@ -142,6 +257,8 @@ CashBoxSnapshot _snapshotWithBalance() {
     createdAt: Timestamp.fromMillisecondsSinceEpoch(2000),
     createdBy: 'admin-1',
     status: CashWithdrawalStatus.active,
+    operationId: 'manual-operation-1',
+    note: 'محروقات',
   );
   return CashBoxSnapshot.fromDocuments(
     openingBalance: opening,
@@ -150,13 +267,22 @@ CashBoxSnapshot _snapshotWithBalance() {
   );
 }
 
-Widget _screen(UserModel user, CashBoxRepository repository) => MaterialApp(
-  home: CashBoxScreen(user: user, repository: repository),
+Widget _screen(
+  UserModel user,
+  CashBoxRepository repository, {
+  CashWithdrawalRepository? withdrawalRepository,
+}) => MaterialApp(
+  home: CashBoxScreen(
+    user: user,
+    repository: repository,
+    withdrawalRepository: withdrawalRepository,
+  ),
 );
 
 void main() {
-  testWidgets('shows the computed balance, totals and ledger rows',
-      (tester) async {
+  testWidgets('shows the computed balance, totals and ledger rows', (
+    tester,
+  ) async {
     final repo = _FakeCashBoxRepository(snapshot: _snapshotWithBalance());
     await tester.pumpWidget(_screen(_admin, repo));
     await tester.pumpAndSettle();
@@ -165,20 +291,25 @@ void main() {
     expect(find.text('115.00 د.أ'), findsOneWidget);
     expect(find.text('20.00 د.أ'), findsOneWidget);
     expect(find.text('5.00 د.أ'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('+20.00 د.أ'), 250);
     expect(find.text('+20.00 د.أ'), findsOneWidget);
     expect(find.text('-5.00 د.أ'), findsOneWidget);
     expect(find.text('إيداع نقدي'), findsOneWidget);
     expect(find.text('مصروف محل'), findsOneWidget);
   });
 
-  testWidgets('admin sees the deposit and opening-balance actions',
-      (tester) async {
+  testWidgets('admin sees the deposit and opening-balance actions', (
+    tester,
+  ) async {
     final repo = _FakeCashBoxRepository(snapshot: _snapshotWithBalance());
     await tester.pumpWidget(_screen(_admin, repo));
     await tester.pumpAndSettle();
 
     expect(find.text('تسجيل إيداع نقدي'), findsOneWidget);
     expect(find.text('تعديل مُدقَّق'), findsOneWidget);
+    expect(find.text('تسجيل سحب نقدي'), findsOneWidget);
+    await tester.scrollUntilVisible(find.byTooltip('إلغاء السحب النقدي'), 250);
+    expect(find.byTooltip('إلغاء السحب النقدي'), findsOneWidget);
   });
 
   testWidgets('employee sees the ledger but no admin actions', (tester) async {
@@ -188,12 +319,15 @@ void main() {
 
     expect(find.text('115.00 د.أ'), findsOneWidget);
     expect(find.text('تسجيل إيداع نقدي'), findsNothing);
+    expect(find.text('تسجيل سحب نقدي'), findsNothing);
     expect(find.text('تعديل مُدقَّق'), findsNothing);
     expect(find.text('تعيين الرصيد الافتتاحي'), findsNothing);
+    expect(find.byTooltip('إلغاء السحب النقدي'), findsNothing);
   });
 
-  testWidgets('prompts the admin when the opening balance is missing',
-      (tester) async {
+  testWidgets('prompts the admin when the opening balance is missing', (
+    tester,
+  ) async {
     final repo = _FakeCashBoxRepository();
     await tester.pumpWidget(_screen(_admin, repo));
     await tester.pumpAndSettle();
@@ -203,15 +337,22 @@ void main() {
     expect(find.text('115.00 د.أ'), findsNothing);
   });
 
-  testWidgets('shows a clear error instead of a partial balance', (tester) async {
+  testWidgets('shows a clear error instead of a partial balance', (
+    tester,
+  ) async {
     final repo = _FakeCashBoxRepository(
-      error: const CashBoxDataException('Two active withdrawals claim invoice inv-1.'),
+      error: const CashBoxDataException(
+        'Two active withdrawals claim invoice inv-1.',
+      ),
     );
     await tester.pumpWidget(_screen(_admin, repo));
     await tester.pumpAndSettle();
 
     expect(find.text('تعذر حساب رصيد الصندوق'), findsOneWidget);
-    expect(find.text('Two active withdrawals claim invoice inv-1.'), findsOneWidget);
+    expect(
+      find.text('Two active withdrawals claim invoice inv-1.'),
+      findsOneWidget,
+    );
     expect(find.text('115.00 د.أ'), findsNothing);
   });
 
@@ -223,14 +364,8 @@ void main() {
     await tester.tap(find.text('تسجيل إيداع نقدي'));
     await tester.pumpAndSettle();
 
-    await tester.enterText(
-      find.byType(TextField).at(0),
-      '10.00',
-    );
-    await tester.enterText(
-      find.byType(TextField).at(1),
-      'إيداع يومي',
-    );
+    await tester.enterText(find.byType(TextField).at(0), '10.00');
+    await tester.enterText(find.byType(TextField).at(1), 'إيداع يومي');
     await tester.tap(find.text('حفظ'));
     await tester.pumpAndSettle();
 
@@ -238,6 +373,116 @@ void main() {
     expect(repo.depositCalls.single['amountFils'], 10000);
     expect(repo.depositCalls.single['note'], 'إيداع يومي');
     expect(repo.depositCalls.single['createdBy'], 'admin-1');
+  });
+
+  testWidgets('creates a manual withdrawal with a positive amount and note', (
+    tester,
+  ) async {
+    final cashBox = _FakeCashBoxRepository(snapshot: _snapshotWithBalance());
+    final withdrawals = _FakeCashWithdrawalRepository(cashBox);
+    await tester.pumpWidget(
+      _screen(_admin, cashBox, withdrawalRepository: withdrawals),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('تسجيل سحب نقدي'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('حفظ'));
+    await tester.pumpAndSettle();
+    expect(find.text('المبلغ مطلوب.'), findsOneWidget);
+    expect(find.text('سبب السحب مطلوب.'), findsOneWidget);
+    expect(withdrawals.createCalls, isEmpty);
+
+    await tester.enterText(find.byType(TextField).at(0), '0');
+    await tester.enterText(find.byType(TextField).at(1), 'فاتورة كهرباء');
+    await tester.tap(find.text('حفظ'));
+    await tester.pumpAndSettle();
+    expect(find.text('يجب أن يكون أكبر من صفر.'), findsOneWidget);
+    expect(withdrawals.createCalls, isEmpty);
+
+    await tester.enterText(find.byType(TextField).at(0), '10.00');
+    await tester.tap(find.text('حفظ'));
+    await tester.pumpAndSettle();
+
+    expect(withdrawals.createCalls, hasLength(1));
+    expect(withdrawals.createCalls.single['storeId'], 'store-1');
+    expect(withdrawals.createCalls.single['amountFils'], 10000);
+    expect(
+      withdrawals.createCalls.single['type'],
+      CashWithdrawalType.shopExpense,
+    );
+    expect(withdrawals.createCalls.single['note'], 'فاتورة كهرباء');
+    expect(withdrawals.createCalls.single['createdBy'], 'admin-1');
+    expect(find.text('105.00 د.أ'), findsOneWidget);
+    expect(find.text('-10.00 د.أ'), findsOneWidget);
+  });
+
+  testWidgets('admin cancels only a manual withdrawal and restores balance', (
+    tester,
+  ) async {
+    final cashBox = _FakeCashBoxRepository(snapshot: _snapshotWithBalance());
+    final withdrawals = _FakeCashWithdrawalRepository(cashBox);
+    await tester.pumpWidget(
+      _screen(_admin, cashBox, withdrawalRepository: withdrawals),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('115.00 د.أ'), findsOneWidget);
+    await tester.scrollUntilVisible(find.byTooltip('إلغاء السحب النقدي'), 250);
+    await tester.tap(find.byTooltip('إلغاء السحب النقدي'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('تأكيد الإلغاء'));
+    await tester.pumpAndSettle();
+    expect(find.text('سبب الإلغاء مطلوب.'), findsOneWidget);
+    expect(withdrawals.cancelCalls, isEmpty);
+
+    await tester.enterText(find.byType(TextField), 'تم إدخاله بالخطأ');
+    await tester.tap(find.text('تأكيد الإلغاء'));
+    await tester.pumpAndSettle();
+
+    expect(withdrawals.cancelCalls, [
+      {
+        'storeId': 'store-1',
+        'withdrawalId': 'manual-1',
+        'operationId': 'withdrawal-operation-1',
+        'cancelledBy': 'admin-1',
+        'reason': 'تم إدخاله بالخطأ',
+      },
+    ]);
+    expect(
+      cashBox.snapshot!.withdrawals.single.status,
+      CashWithdrawalStatus.cancelled,
+    );
+    expect(find.text('120.00 د.أ'), findsOneWidget);
+    expect(find.byTooltip('إلغاء السحب النقدي'), findsNothing);
+  });
+
+  testWidgets('does not offer cancellation for invoice-linked withdrawals', (
+    tester,
+  ) async {
+    final snapshot = _snapshotWithBalance();
+    final snapshotWithInvoice = CashBoxSnapshot.fromDocuments(
+      openingBalance: snapshot.openingBalance,
+      deposits: snapshot.deposits,
+      withdrawals: [
+        ...snapshot.withdrawals,
+        CashWithdrawalModel(
+          withdrawalId: 'invoice_inv-1',
+          amountFils: 1000,
+          type: CashWithdrawalType.purchaseInvoice,
+          invoiceId: 'inv-1',
+          createdAt: Timestamp.fromMillisecondsSinceEpoch(3000),
+          createdBy: 'admin-1',
+          status: CashWithdrawalStatus.active,
+        ),
+      ],
+    );
+    final cashBox = _FakeCashBoxRepository(snapshot: snapshotWithInvoice);
+    await tester.pumpWidget(_screen(_admin, cashBox));
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(find.byTooltip('إلغاء السحب النقدي'), 250);
+    expect(find.byTooltip('إلغاء السحب النقدي'), findsOneWidget);
   });
 
   testWidgets('sets the opening balance when none exists', (tester) async {

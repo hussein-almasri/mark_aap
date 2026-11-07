@@ -212,7 +212,7 @@ void main() {
       () => SupplierPaymentModel.fromData(paymentId: 'payment-1', data: data),
       throwsFormatException,
     );
-  );
+  });
 
   test('CashWithdrawal round-trips and requires exactly one matching link', () {
     final model = CashWithdrawalModel(
@@ -242,7 +242,7 @@ void main() {
       ),
       throwsArgumentError,
     );
-  );
+  });
 
   test(
     'FinancialOperation round-trips valid payment operation and rejects bad payloads',
@@ -289,7 +289,6 @@ void main() {
       );
     },
   );
-}
 
 // Customer model tests
 final customerTimestamp = Timestamp.fromDate(DateTime.utc(2026, 1, 2));
@@ -337,12 +336,14 @@ test('Empty ID rejected', () {
     () => CustomerModel(
       customerId: '',
       name: 'Test',
+      debtEnabled: true,
+      isActive: true,
       createdAt: customerTimestamp,
       updatedAt: customerTimestamp,
       createdBy: 'admin-1',
       updatedBy: 'admin-1',
     ),
-    throws ArgumentError,
+    throwsArgumentError,
   );
 });
 
@@ -351,12 +352,14 @@ test('Empty name rejected', () {
     () => CustomerModel(
       customerId: 'cust-1',
       name: '',
+      debtEnabled: true,
+      isActive: true,
       createdAt: customerTimestamp,
       updatedAt: customerTimestamp,
       createdBy: 'admin-1',
       updatedBy: 'admin-1',
     ),
-    throws ArgumentError,
+    throwsArgumentError,
   );
 });
 
@@ -365,12 +368,14 @@ test('Name is trimmed', () {
     () => CustomerModel(
       customerId: 'cust-1',
       name: '  Test  ',
+      debtEnabled: true,
+      isActive: true,
       createdAt: customerTimestamp,
       updatedAt: customerTimestamp,
       createdBy: 'admin-1',
       updatedBy: 'admin-1',
     ),
-    throws ArgumentError,
+    throwsArgumentError,
   );
 });
 
@@ -379,12 +384,14 @@ test('Name > 120 characters rejected', () {
     () => CustomerModel(
       customerId: 'cust-1',
       name: 'A' * 121,
+      debtEnabled: true,
+      isActive: true,
       createdAt: customerTimestamp,
       updatedAt: customerTimestamp,
       createdBy: 'admin-1',
       updatedBy: 'admin-1',
     ),
-    throws ArgumentError,
+    throwsArgumentError,
   );
 });
 
@@ -447,6 +454,8 @@ test('timestamps round-trip', () {
   final model = CustomerModel(
     customerId: 'cust-1',
     name: 'Test',
+    debtEnabled: true,
+    isActive: true,
     createdAt: customerTimestamp,
     updatedAt: customerTimestamp,
     createdBy: 'admin-1',
@@ -465,6 +474,10 @@ test('createdBy/updatedBy round-trip', () {
   final model = CustomerModel(
     customerId: 'cust-1',
     name: 'Test',
+    debtEnabled: true,
+    isActive: true,
+    createdAt: customerTimestamp,
+    updatedAt: customerTimestamp,
     createdBy: 'admin-1',
     updatedBy: 'user-2',
   );
@@ -482,12 +495,14 @@ test('malformed/missing required fields rejected', () {
     () => CustomerModel(
       customerId: '',
       name: '',
+      debtEnabled: true,
+      isActive: true,
       createdAt: customerTimestamp,
       updatedAt: customerTimestamp,
       createdBy: '',
       updatedBy: '',
     ),
-    throws ArgumentError,
+    throwsArgumentError,
   );
 });
 
@@ -552,7 +567,7 @@ test('amountFils == 0 rejected', () {
       createdBy: 'admin-1',
       status: CustomerTransactionStatus.active,
     ),
-    throws ArgumentError,
+    throwsArgumentError,
   );
 });
 
@@ -566,9 +581,9 @@ test('negative amount rejected', () {
       createdBy: 'admin-1',
       status: CustomerTransactionStatus.active,
     ),
-    throws ArgumentError,
+    throwsArgumentError,
   );
-);
+});
 
 test('invalid transaction type rejected', () {
   expect(
@@ -580,9 +595,9 @@ test('invalid transaction type rejected', () {
       createdBy: 'admin-1',
       status: CustomerTransactionStatus.active,
     ),
-    throws StateError,
+    throwsStateError,
   );
-);
+});
 
 test('ACTIVE transaction cannot contain cancellation metadata', () {
   final model = CustomerTransactionModel(
@@ -615,9 +630,9 @@ test('CANCELLED transaction requires cancelledAt', () {
       cancelledBy: 'admin-1',
       cancellationReason: 'Test',
     ),
-    throws ArgumentError,
+    throwsArgumentError,
   );
-);
+});
 
 test('CANCELLED transaction requires cancelledBy', () {
   expect(
@@ -632,9 +647,9 @@ test('CANCELLED transaction requires cancelledBy', () {
       cancelledBy: null,
       cancellationReason: 'Test',
     ),
-    throws ArgumentError,
+    throwsArgumentError,
   );
-);
+});
 
 test('CANCELLED transaction requires non-empty cancellationReason', () {
   expect(
@@ -649,9 +664,9 @@ test('CANCELLED transaction requires non-empty cancellationReason', () {
       cancelledBy: 'admin-1',
       cancellationReason: '',
     ),
-    throws ArgumentError,
+    throwsArgumentError,
   );
-);
+});
 
 test('Valid cancellation round-trip', () {
   final model = CustomerTransactionModel(
@@ -682,7 +697,7 @@ test('Valid cancellation round-trip', () {
   expect(parsed.cancelledBy, 'admin-1');
   expect(parsed.cancellationReason, 'Paid off');
   expect(parsed.note, 'Final payment');
-);
+});
 
 test('note round-trip', () {
   final model = CustomerTransactionModel(
@@ -703,3 +718,4 @@ test('note round-trip', () {
   );
   expect(parsed.note, 'Test note');
 });
+}

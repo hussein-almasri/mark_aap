@@ -2,17 +2,26 @@ import 'package:flutter/material.dart';
 
 import '../../../core/utils/price_amount.dart';
 import '../../../data/models/cash_box_models.dart';
+import '../../../data/models/cash_withdrawal_model.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/repositories/cash_box_repository.dart';
+import '../../../data/repositories/cash_withdrawal_repository.dart';
 
 /// Shop cash box: current balance, opening balance, deposit totals, effective
 /// withdrawals and the merged movement ledger. Admins may also record a
-/// deposit and set/amend the opening balance.
+/// deposit, create or cancel manual withdrawals, and set/amend the opening
+/// balance.
 class CashBoxScreen extends StatefulWidget {
-  const CashBoxScreen({required this.user, this.repository, super.key});
+  const CashBoxScreen({
+    required this.user,
+    this.repository,
+    this.withdrawalRepository,
+    super.key,
+  });
 
   final UserModel user;
   final CashBoxRepository? repository;
+  final CashWithdrawalRepository? withdrawalRepository;
 
   @override
   State<CashBoxScreen> createState() => _CashBoxScreenState();
@@ -21,10 +30,13 @@ class CashBoxScreen extends StatefulWidget {
 class _CashBoxScreenState extends State<CashBoxScreen> {
   late final CashBoxRepository _repository =
       widget.repository ?? CashBoxRepository();
+  late final CashWithdrawalRepository _withdrawalRepository =
+      widget.withdrawalRepository ?? CashWithdrawalRepository();
 
   CashBoxSnapshot? _snapshot;
   Object? _error;
   bool _loading = false;
+  bool _isWritingWithdrawal = false;
 
   bool get _isAdmin => widget.user.isAdmin;
 
@@ -63,24 +75,91 @@ class _CashBoxScreenState extends State<CashBoxScreen> {
         createdBy: widget.user.uid,
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('تم تسجيل الإيداع النقدي.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('تم تسجيل الإيداع النقدي.')));
       await _load();
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(_errorMessage(error))),
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(_errorMessage(error))));
+    }
+  }
+
+  Future<void> _recordWithdrawal() async {
+    if (!_isAdmin || _isWritingWithdrawal) return;
+    final saved = await _showManualWithdrawalDialog(context);
+    if (saved == null || !mounted) return;
+    setState(() => _isWritingWithdrawal = true);
+    try {
+      await _withdrawalRepository.createManualWithdrawal(
+        storeId: widget.user.storeId,
+        amountFils: saved.amountFils,
+        type: saved.type,
+        withdrawalId: _withdrawalRepository.newWithdrawalId(
+          widget.user.storeId,
+        ),
+        createdBy: widget.user.uid,
+        operationId: _withdrawalRepository.newOperationId(widget.user.storeId),
+        note: saved.note,
       );
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('تم تسجيل السحب النقدي.')));
+      await _load();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(_errorMessage(error))));
+    } finally {
+      if (mounted) setState(() => _isWritingWithdrawal = false);
+    }
+  }
+
+  Future<void> _cancelWithdrawal(CashWithdrawalModel withdrawal) async {
+    if (!_isAdmin ||
+        !_isManualWithdrawal(withdrawal) ||
+        withdrawal.status != CashWithdrawalStatus.active ||
+        _isWritingWithdrawal) {
+      return;
+    }
+    final reason = await _showWithdrawalCancellationDialog(context);
+    if (reason == null || !mounted) return;
+    setState(() => _isWritingWithdrawal = true);
+    try {
+      await _withdrawalRepository.cancelWithdrawal(
+        storeId: widget.user.storeId,
+        withdrawalId: withdrawal.withdrawalId,
+        operationId: _withdrawalRepository.newOperationId(widget.user.storeId),
+        cancelledBy: widget.user.uid,
+        reason: reason,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('تم إلغاء السحب النقدي.')));
+      await _load();
+    } catch (error) {
+      if (!mounted) return;
+      if (error is CashWithdrawalAlreadyCancelledException) {
+        await _load();
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(_errorMessage(error))));
+      }
+    } finally {
+      if (mounted) setState(() => _isWritingWithdrawal = false);
     }
   }
 
   Future<void> _editOpeningBalance() async {
     final existing = _snapshot?.openingBalance;
-    final saved = await _showOpeningBalanceDialog(
-      context,
-      existing: existing,
-    );
+    final saved = await _showOpeningBalanceDialog(context, existing: existing);
     if (saved == null || !mounted) return;
     try {
       if (existing == null) {
@@ -100,15 +179,15 @@ class _CashBoxScreenState extends State<CashBoxScreen> {
         );
       }
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('تم حفظ الرصيد الافتتاحي.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('تم حفظ الرصيد الافتتاحي.')));
       await _load();
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(_errorMessage(error))),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(_errorMessage(error))));
     }
   }
 
@@ -121,6 +200,21 @@ class _CashBoxScreenState extends State<CashBoxScreen> {
     }
     if (error is CashBoxMismatchException) {
       return 'تعذر إتمام العملية؛ حاول مرة أخرى بمعرّف جديد.';
+    }
+    if (error is CashWithdrawalMismatchException) {
+      return 'تعذر إتمام العملية؛ معرّف العملية مستخدم مسبقاً.';
+    }
+    if (error is CashWithdrawalAlreadyCancelledException) {
+      return 'تم إلغاء هذا السحب مسبقاً.';
+    }
+    if (error is CashWithdrawalNotFoundException) {
+      return 'السحب النقدي غير موجود.';
+    }
+    if (error is CashWithdrawalNotManualException) {
+      return 'يمكن إلغاء السحوبات اليدوية فقط.';
+    }
+    if (error.toString().contains('permission-denied')) {
+      return 'لا تملك صلاحية تنفيذ هذه العملية.';
     }
     if (error is CashBoxDataException) return error.message;
     if (error is ArgumentError) return error.message ?? 'قيمة غير صحيحة.';
@@ -142,10 +236,7 @@ class _CashBoxScreenState extends State<CashBoxScreen> {
           padding: const EdgeInsets.all(16),
           children: [
             if (_error != null) ...[
-              _ErrorBanner(
-                message: _errorMessage(_error!),
-                onRetry: _load,
-              ),
+              _ErrorBanner(message: _errorMessage(_error!), onRetry: _load),
               const SizedBox(height: 12),
             ],
             if (summary != null) ...[
@@ -173,6 +264,14 @@ class _CashBoxScreenState extends State<CashBoxScreen> {
                 icon: const Icon(Icons.add_circle_outline),
                 label: const Text('تسجيل إيداع نقدي'),
               ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: _loading || _isWritingWithdrawal
+                    ? null
+                    : _recordWithdrawal,
+                icon: const Icon(Icons.money_off_csred_outlined),
+                label: const Text('تسجيل سحب نقدي'),
+              ),
               const SizedBox(height: 16),
             ],
             Text(
@@ -194,13 +293,198 @@ class _CashBoxScreenState extends State<CashBoxScreen> {
               )
             else if (summary != null)
               ...summary.movements.map(
-                (movement) => _MovementTile(movement: movement),
+                (movement) => _MovementTile(
+                  movement: movement,
+                  onCancel: _cancelAction(movement),
+                  isCancelling: _isWritingWithdrawal,
+                ),
               ),
           ],
         ),
       ),
     );
   }
+
+  VoidCallback? _cancelAction(CashBoxMovement movement) {
+    final withdrawal = movement.withdrawal;
+    if (!_isAdmin ||
+        withdrawal == null ||
+        !_isManualWithdrawal(withdrawal) ||
+        withdrawal.status != CashWithdrawalStatus.active) {
+      return null;
+    }
+    return () => _cancelWithdrawal(withdrawal);
+  }
+
+  bool _isManualWithdrawal(CashWithdrawalModel withdrawal) =>
+      withdrawal.type != CashWithdrawalType.purchaseInvoice &&
+      withdrawal.invoiceId == null &&
+      withdrawal.supplierPaymentId == null &&
+      withdrawal.operationId != null;
+
+  Future<_ManualWithdrawalInput?> _showManualWithdrawalDialog(
+    BuildContext context,
+  ) {
+    final amountController = TextEditingController();
+    final noteController = TextEditingController();
+    final formKey = GlobalKey<FormState>();
+    var selectedType = CashWithdrawalType.shopExpense;
+    const types = [
+      CashWithdrawalType.personalExpense,
+      CashWithdrawalType.employeePayment,
+      CashWithdrawalType.billPayment,
+      CashWithdrawalType.electricity,
+      CashWithdrawalType.shopExpense,
+      CashWithdrawalType.other,
+    ];
+
+    return showDialog<_ManualWithdrawalInput>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('تسجيل سحب نقدي'),
+          content: Form(
+            key: formKey,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextFormField(
+                    controller: amountController,
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
+                    decoration: const InputDecoration(
+                      labelText: 'المبلغ (د.أ)',
+                      hintText: 'مثال: 10.00',
+                      border: OutlineInputBorder(),
+                      suffixText: 'د.أ',
+                    ),
+                    validator: _amountValidator,
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<CashWithdrawalType>(
+                    initialValue: selectedType,
+                    decoration: const InputDecoration(
+                      labelText: 'نوع السحب',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: types
+                        .map(
+                          (type) => DropdownMenuItem(
+                            value: type,
+                            child: Text(_withdrawalTypeLabel(type)),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (type) {
+                      if (type != null) {
+                        setDialogState(() => selectedType = type);
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: noteController,
+                    maxLength: 500,
+                    maxLines: 3,
+                    decoration: const InputDecoration(
+                      labelText: 'سبب السحب / ملاحظة',
+                      border: OutlineInputBorder(),
+                    ),
+                    validator: (value) {
+                      final text = value?.trim() ?? '';
+                      if (text.isEmpty) return 'سبب السحب مطلوب.';
+                      if (text.length > 500) {
+                        return 'السبب لا يتجاوز 500 حرف.';
+                      }
+                      return null;
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('إلغاء'),
+            ),
+            FilledButton(
+              onPressed: () {
+                if (!formKey.currentState!.validate()) return;
+                Navigator.of(dialogContext).pop(
+                  _ManualWithdrawalInput(
+                    amountFils: PriceAmount.parseJodToFils(
+                      amountController.text.trim(),
+                    ),
+                    type: selectedType,
+                    note: noteController.text.trim(),
+                  ),
+                );
+              },
+              child: const Text('حفظ'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<String?> _showWithdrawalCancellationDialog(BuildContext context) {
+    final reasonController = TextEditingController();
+    final formKey = GlobalKey<FormState>();
+    return showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('إلغاء السحب النقدي'),
+        content: Form(
+          key: formKey,
+          child: TextFormField(
+            controller: reasonController,
+            autofocus: true,
+            maxLength: 500,
+            maxLines: 3,
+            decoration: const InputDecoration(
+              labelText: 'سبب الإلغاء',
+              border: OutlineInputBorder(),
+            ),
+            validator: (value) {
+              final text = value?.trim() ?? '';
+              if (text.isEmpty) return 'سبب الإلغاء مطلوب.';
+              if (text.length > 500) {
+                return 'سبب الإلغاء لا يتجاوز 500 حرف.';
+              }
+              return null;
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('رجوع'),
+          ),
+          FilledButton(
+            onPressed: () {
+              if (!formKey.currentState!.validate()) return;
+              Navigator.of(dialogContext).pop(reasonController.text.trim());
+            },
+            child: const Text('تأكيد الإلغاء'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static String _withdrawalTypeLabel(CashWithdrawalType type) => switch (type) {
+    CashWithdrawalType.purchaseInvoice => 'فاتورة شراء',
+    CashWithdrawalType.personalExpense => 'مصروف شخصي',
+    CashWithdrawalType.employeePayment => 'دفع موظف',
+    CashWithdrawalType.billPayment => 'دفع فاتورة',
+    CashWithdrawalType.electricity => 'كهرباء',
+    CashWithdrawalType.shopExpense => 'مصروف محل',
+    CashWithdrawalType.other => 'أخرى',
+  };
 
   Future<_OpeningBalanceInput?> _showDepositDialog(BuildContext context) {
     final amountController = TextEditingController();
@@ -219,8 +503,9 @@ class _CashBoxScreenState extends State<CashBoxScreen> {
               children: [
                 TextFormField(
                   controller: amountController,
-                  keyboardType:
-                      const TextInputType.numberWithOptions(decimal: true),
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
                   decoration: const InputDecoration(
                     labelText: 'المبلغ (د.أ)',
                     hintText: 'مثال: 10.00',
@@ -294,7 +579,9 @@ class _CashBoxScreenState extends State<CashBoxScreen> {
     return showDialog<_OpeningBalanceInput>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: Text(isAmendment ? 'تعديل الرصيد الافتتاحي' : 'تعيين الرصيد الافتتاحي'),
+        title: Text(
+          isAmendment ? 'تعديل الرصيد الافتتاحي' : 'تعيين الرصيد الافتتاحي',
+        ),
         content: Form(
           key: formKey,
           child: SingleChildScrollView(
@@ -316,8 +603,9 @@ class _CashBoxScreenState extends State<CashBoxScreen> {
                 ],
                 TextFormField(
                   controller: amountController,
-                  keyboardType:
-                      const TextInputType.numberWithOptions(decimal: true),
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
                   decoration: const InputDecoration(
                     labelText: 'الرصيد الافتتاحي (د.أ)',
                     hintText: 'مثال: 50.00',
@@ -405,6 +693,18 @@ class _OpeningBalanceInput {
   final String operationId;
 }
 
+class _ManualWithdrawalInput {
+  const _ManualWithdrawalInput({
+    required this.amountFils,
+    required this.type,
+    required this.note,
+  });
+
+  final int amountFils;
+  final CashWithdrawalType type;
+  final String note;
+}
+
 class _ErrorBanner extends StatelessWidget {
   const _ErrorBanner({required this.message, required this.onRetry});
 
@@ -428,7 +728,10 @@ class _ErrorBanner extends StatelessWidget {
           const SizedBox(height: 8),
           Align(
             alignment: AlignmentDirectional.centerStart,
-            child: TextButton(onPressed: onRetry, child: const Text('إعادة المحاولة')),
+            child: TextButton(
+              onPressed: onRetry,
+              child: const Text('إعادة المحاولة'),
+            ),
           ),
         ],
       ),
@@ -461,7 +764,10 @@ class _MissingOpeningBanner extends StatelessWidget {
           ),
           if (isAdmin) ...[
             const SizedBox(height: 8),
-            FilledButton(onPressed: onSet, child: const Text('تعيين الرصيد الافتتاحي')),
+            FilledButton(
+              onPressed: onSet,
+              child: const Text('تعيين الرصيد الافتتاحي'),
+            ),
           ],
         ],
       ),
@@ -530,7 +836,10 @@ class _SummaryRow extends StatelessWidget {
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
         Text(label),
-        Text(value, style: TextStyle(color: color, fontWeight: FontWeight.w600)),
+        Text(
+          value,
+          style: TextStyle(color: color, fontWeight: FontWeight.w600),
+        ),
       ],
     ),
   );
@@ -575,7 +884,10 @@ class _OpeningCard extends StatelessWidget {
             const SizedBox(height: 4),
             Align(
               alignment: AlignmentDirectional.centerStart,
-              child: TextButton(onPressed: onAmend, child: const Text('تعديل مُدقَّق')),
+              child: TextButton(
+                onPressed: onAmend,
+                child: const Text('تعديل مُدقَّق'),
+              ),
             ),
           ],
         ],
@@ -585,15 +897,23 @@ class _OpeningCard extends StatelessWidget {
 }
 
 class _MovementTile extends StatelessWidget {
-  const _MovementTile({required this.movement});
+  const _MovementTile({
+    required this.movement,
+    this.onCancel,
+    this.isCancelling = false,
+  });
 
   final CashBoxMovement movement;
+  final VoidCallback? onCancel;
+  final bool isCancelling;
 
   @override
   Widget build(BuildContext context) {
     final isMoneyIn = movement.isMoneyIn;
     final sign = isMoneyIn ? '+' : '-';
-    final color = isMoneyIn ? Colors.green : Theme.of(context).colorScheme.error;
+    final color = isMoneyIn
+        ? Colors.green
+        : Theme.of(context).colorScheme.error;
     final date = movement.createdAt.toDate();
 
     return Card(
@@ -614,9 +934,22 @@ class _MovementTile extends StatelessWidget {
                 '${date.day.toString().padLeft(2, '0')}',
           ].where((part) => part.isNotEmpty).join(' • '),
         ),
-        trailing: Text(
-          '$sign${PriceAmount.formatJod2(movement.amountFils, includeCurrency: false)} د.أ',
-          style: TextStyle(color: color, fontWeight: FontWeight.bold),
+        trailing: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Text(
+              '$sign${PriceAmount.formatJod2(movement.amountFils, includeCurrency: false)} د.أ',
+              style: TextStyle(color: color, fontWeight: FontWeight.bold),
+            ),
+            if (onCancel != null)
+              IconButton(
+                tooltip: 'إلغاء السحب النقدي',
+                visualDensity: VisualDensity.compact,
+                onPressed: isCancelling ? null : onCancel,
+                icon: const Icon(Icons.cancel_outlined),
+              ),
+          ],
         ),
       ),
     );

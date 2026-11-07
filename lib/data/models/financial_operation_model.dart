@@ -4,7 +4,12 @@ enum FinancialOperationType {
   createPurchaseInvoice('CREATE_PURCHASE_INVOICE'),
   createSupplierPayment('CREATE_SUPPLIER_PAYMENT'),
   cancelPurchaseInvoice('CANCEL_PURCHASE_INVOICE'),
-  cancelSupplierPayment('CANCEL_SUPPLIER_PAYMENT');
+  cancelSupplierPayment('CANCEL_SUPPLIER_PAYMENT'),
+  createManualWithdrawal('CREATE_MANUAL_WITHDRAWAL'),
+  cancelManualWithdrawal('CANCEL_MANUAL_WITHDRAWAL'),
+  setOpeningBalance('SET_OPENING_BALANCE'),
+  amendOpeningBalance('AMEND_OPENING_BALANCE'),
+  createCashDeposit('CREATE_CASH_DEPOSIT');
 
   const FinancialOperationType(this.value);
 
@@ -16,6 +21,13 @@ enum FinancialOperationType {
       'CREATE_SUPPLIER_PAYMENT' => FinancialOperationType.createSupplierPayment,
       'CANCEL_PURCHASE_INVOICE' => FinancialOperationType.cancelPurchaseInvoice,
       'CANCEL_SUPPLIER_PAYMENT' => FinancialOperationType.cancelSupplierPayment,
+      'CREATE_MANUAL_WITHDRAWAL' =>
+        FinancialOperationType.createManualWithdrawal,
+      'CANCEL_MANUAL_WITHDRAWAL' =>
+        FinancialOperationType.cancelManualWithdrawal,
+      'SET_OPENING_BALANCE' => FinancialOperationType.setOpeningBalance,
+      'AMEND_OPENING_BALANCE' => FinancialOperationType.amendOpeningBalance,
+      'CREATE_CASH_DEPOSIT' => FinancialOperationType.createCashDeposit,
       _ => throw FormatException('Unknown financial operation type: $value'),
     };
   }
@@ -50,10 +62,17 @@ class FinancialOperationModel {
     required this.retryCount,
     this.invoiceId,
     this.paymentId,
+    this.withdrawalId,
+    this.depositId,
+    this.cashBoxId,
+    this.amountFils,
     List<String>? photoIds,
   }) : photoIds = photoIds == null ? null : List.unmodifiable(photoIds) {
     _requireId(operationId, 'operationId');
     _requireId(createdBy, 'createdBy');
+    if (amountFils != null && amountFils! < 0) {
+      throw ArgumentError.value(amountFils, 'amountFils', 'Must be non-negative.');
+    }
     if (retryCount < 0 || retryCount > 3) {
       throw ArgumentError.value(retryCount, 'retryCount', 'Must be between 0 and 3.');
     }
@@ -68,6 +87,10 @@ class FinancialOperationModel {
   final int retryCount;
   final String? invoiceId;
   final String? paymentId;
+  final String? withdrawalId;
+  final String? depositId;
+  final String? cashBoxId;
+  final int? amountFils;
   final List<String>? photoIds;
 
   factory FinancialOperationModel.fromDocument(
@@ -103,6 +126,10 @@ class FinancialOperationModel {
       retryCount: _requiredInt(data, 'retryCount'),
       invoiceId: _optionalString(data, 'invoiceId'),
       paymentId: _optionalString(data, 'paymentId'),
+      withdrawalId: _optionalString(data, 'withdrawalId'),
+      depositId: _optionalString(data, 'depositId'),
+      cashBoxId: _optionalString(data, 'cashBoxId'),
+      amountFils: _optionalInt(data, 'amountFils'),
       photoIds: rawPhotoIds == null ? null : List<String>.from(rawPhotoIds),
     );
   }
@@ -116,17 +143,42 @@ class FinancialOperationModel {
         'retryCount': retryCount,
         if (invoiceId != null) 'invoiceId': invoiceId,
         if (paymentId != null) 'paymentId': paymentId,
+        if (withdrawalId != null) 'withdrawalId': withdrawalId,
+        if (depositId != null) 'depositId': depositId,
+        if (cashBoxId != null) 'cashBoxId': cashBoxId,
+        if (amountFils != null) 'amountFils': amountFils,
         if (photoIds != null) 'photoIds': photoIds,
       };
 
   void _validatePayload() {
-    final isInvoiceOperation = type == FinancialOperationType.createPurchaseInvoice ||
+    final targetIds = [invoiceId, paymentId, withdrawalId, depositId, cashBoxId];
+    final isInvoiceOperation =
+        type == FinancialOperationType.createPurchaseInvoice ||
         type == FinancialOperationType.cancelPurchaseInvoice;
+    final isPaymentOperation =
+        type == FinancialOperationType.createSupplierPayment ||
+        type == FinancialOperationType.cancelSupplierPayment;
+    final isWithdrawalOperation =
+        type == FinancialOperationType.createManualWithdrawal ||
+        type == FinancialOperationType.cancelManualWithdrawal;
+    final isDepositOperation = type == FinancialOperationType.createCashDeposit;
+
+    final expectedTarget = isInvoiceOperation
+        ? invoiceId
+        : isPaymentOperation
+        ? paymentId
+        : isWithdrawalOperation
+        ? withdrawalId
+        : isDepositOperation
+        ? depositId
+        : cashBoxId;
+    if (expectedTarget == null ||
+        targetIds.where((value) => value != null).length != 1) {
+      throw ArgumentError('Operation requires its matching target ID only.');
+    }
+    _requireId(expectedTarget, 'targetId');
+
     if (isInvoiceOperation) {
-      if (invoiceId == null || paymentId != null) {
-        throw ArgumentError('Invoice operations require invoiceId only.');
-      }
-      _requireId(invoiceId!, 'invoiceId');
       if (type == FinancialOperationType.createPurchaseInvoice &&
           invoiceId != operationId) {
         throw ArgumentError('Invoice creation operationId must equal invoiceId.');
@@ -141,17 +193,32 @@ class FinancialOperationModel {
               photoIds!.any((id) => id.trim().isEmpty))) {
         throw ArgumentError('Invoice operation photoIds must be unique IDs (max 3).');
       }
-      return;
+    } else if (photoIds != null) {
+      throw ArgumentError('Only invoice operations may include photoIds.');
     }
-    if (paymentId == null || invoiceId != null || photoIds != null) {
-      throw ArgumentError('Payment operations require paymentId only.');
-    }
-    _requireId(paymentId!, 'paymentId');
+
     if (type == FinancialOperationType.createSupplierPayment &&
         paymentId != operationId) {
       throw ArgumentError('Payment creation operationId must equal paymentId.');
     }
   }
+}
+
+class FinancialOperationLogEntry {
+  const FinancialOperationLogEntry({
+    required this.operation,
+    this.amountFils,
+    this.cancellationReason,
+  });
+
+  final FinancialOperationModel operation;
+  final int? amountFils;
+  final String? cancellationReason;
+
+  bool get isCancellation =>
+      operation.type == FinancialOperationType.cancelPurchaseInvoice ||
+      operation.type == FinancialOperationType.cancelSupplierPayment ||
+      operation.type == FinancialOperationType.cancelManualWithdrawal;
 }
 
 String _requiredString(Map<String, dynamic> data, String key) {
@@ -176,6 +243,14 @@ int _requiredInt(Map<String, dynamic> data, String key) {
     throw FormatException('Financial operation $key must be an integer.');
   }
   return value;
+}
+
+int? _optionalInt(Map<String, dynamic> data, String key) {
+  final value = data[key];
+  if (value != null && value is! int) {
+    throw FormatException('Financial operation $key must be an integer.');
+  }
+  return value as int?;
 }
 
 Timestamp _requiredTimestamp(Map<String, dynamic> data, String key) {

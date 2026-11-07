@@ -106,6 +106,7 @@ class CashBoxMovement {
     required this.createdBy,
     required this.typeLabel,
     this.note,
+    this.withdrawal,
   });
 
   final CashBoxMovementKind kind;
@@ -117,6 +118,7 @@ class CashBoxMovement {
   final String createdBy;
   final String typeLabel;
   final String? note;
+  final CashWithdrawalModel? withdrawal;
 
   bool get isMoneyIn => kind == CashBoxMovementKind.deposit;
 }
@@ -210,15 +212,18 @@ class CashBoxSummary {
         );
       }
 
-      movements.add(CashBoxMovement(
-        kind: CashBoxMovementKind.withdrawal,
-        id: withdrawal.withdrawalId,
-        amountFils: withdrawal.amountFils,
-        createdAt: withdrawal.createdAt,
-        createdBy: withdrawal.createdBy,
-        typeLabel: _withdrawalLabel(withdrawal),
-        note: withdrawal.note,
-      ));
+      movements.add(
+        CashBoxMovement(
+          kind: CashBoxMovementKind.withdrawal,
+          id: withdrawal.withdrawalId,
+          amountFils: withdrawal.amountFils,
+          createdAt: withdrawal.createdAt,
+          createdBy: withdrawal.createdBy,
+          typeLabel: _withdrawalLabel(withdrawal),
+          note: withdrawal.note,
+          withdrawal: withdrawal,
+        ),
+      );
     }
 
     movements.sort((a, b) => b.createdAt.compareTo(a.createdAt));
