@@ -174,6 +174,20 @@ test('a transaction or balance cannot be written without its matching pair', asy
   }));
 });
 
+test('cancellation cannot update a transaction without its balance', async () => {
+  const db = testEnv.authenticatedContext('admin-1').firestore();
+  await assertSucceeds(createMovement(db, 'debt-1', 'DEBT', 1000));
+
+  await assertFails(updateDoc(doc(db, transactionPath('debt-1')), {
+    status: 'CANCELLED',
+    cancelledAt: serverTimestamp(),
+    cancelledBy: 'admin-1',
+    cancellationReason: 'Unpaired cancellation',
+  }));
+  assert.equal((await getDoc(doc(db, transactionPath('debt-1')))).data().status, 'ACTIVE');
+  assert.equal((await getDoc(doc(db, balancePath))).data().balanceFils, 1000);
+});
+
 test('one balance update cannot authorize two transaction creates', async () => {
   const db = testEnv.authenticatedContext('admin-1').firestore();
   const batch = writeBatch(db);
