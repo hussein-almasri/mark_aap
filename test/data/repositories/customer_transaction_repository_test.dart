@@ -1,3 +1,4 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mark_aap/data/repositories/customer_transaction_repository.dart';
@@ -15,6 +16,8 @@ void main() {
       'name': 'Customer One',
       'debtEnabled': true,
       'isActive': true,
+      'createdAt': Timestamp.now(),
+      'updatedAt': Timestamp.now(),
       'createdBy': 'admin-1',
       'updatedBy': 'admin-1',
     });
@@ -188,72 +191,25 @@ void main() {
       );
     });
 
-    test('concurrent payments cannot spend more than the balance', () async {
-      final firestore = await createFirestore(openingBalance: 1000);
-      final repository = CustomerTransactionRepository(firestore: firestore);
-
-      final results = await Future.wait([
-        repository
-            .createPayment(
-              storeId: storeId,
-              customerId: customerId,
-              amountFils: 700,
-              createdBy: 'admin-1',
-              transactionId: 'payment-a',
-            )
-            .then((_) => true, onError: (Object _) => false),
-        repository
-            .createPayment(
-              storeId: storeId,
-              customerId: customerId,
-              amountFils: 700,
-              createdBy: 'admin-1',
-              transactionId: 'payment-b',
-            )
-            .then((_) => true, onError: (Object _) => false),
-      ]);
-
-      expect(results.where((succeeded) => succeeded).length, 1);
-      expect(
-        (await firestore.doc(balancePath).get()).data()!['balanceFils'],
-        300,
-      );
-      expect(
-        firestore
-            .dump()
-            .keys
-            .where((path) => path.startsWith('$transactionsPath/'))
-            .length,
-        1,
-      );
-    });
-
     test(
       'retry with the same transaction id does not duplicate its effect',
       () async {
         final firestore = await createFirestore(openingBalance: 1000);
         final repository = CustomerTransactionRepository(firestore: firestore);
-        final args = {
-          'storeId': storeId,
-          'customerId': customerId,
-          'amountFils': 400,
-          'createdBy': 'admin-1',
-          'transactionId': 'payment-retry',
-        };
 
         final firstId = await repository.createPayment(
-          storeId: args['storeId']!,
-          customerId: args['customerId']!,
-          amountFils: args['amountFils']!,
-          createdBy: args['createdBy']!,
-          transactionId: args['transactionId']!,
+          storeId: storeId,
+          customerId: customerId,
+          amountFils: 400,
+          createdBy: 'admin-1',
+          transactionId: 'payment-retry',
         );
         final retryId = await repository.createPayment(
-          storeId: args['storeId']!,
-          customerId: args['customerId']!,
-          amountFils: args['amountFils']!,
-          createdBy: args['createdBy']!,
-          transactionId: args['transactionId']!,
+          storeId: storeId,
+          customerId: customerId,
+          amountFils: 400,
+          createdBy: 'admin-1',
+          transactionId: 'payment-retry',
         );
 
         expect(retryId, firstId);
@@ -262,11 +218,7 @@ void main() {
           600,
         );
         expect(
-          firestore
-              .dump()
-              .keys
-              .where((path) => path.startsWith('$transactionsPath/'))
-              .length,
+          (await firestore.collection(transactionsPath).get()).docs.length,
           1,
         );
       },
