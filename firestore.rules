@@ -102,6 +102,152 @@ service cloud.firestore {
       return /databases/$(database)/documents/stores/$(storeId)/customerNameKeys/$(customerNameKey(name));
     }
 
+    function customerBalancePath(storeId, customerId) {
+      return /databases/$(database)/documents/stores/$(storeId)/customers/$(customerId)/balances/current;
+    }
+
+    function customerTransactionPath(storeId, customerId, transactionId) {
+      return /databases/$(database)/documents/stores/$(storeId)/customers/$(customerId)/transactions/$(transactionId);
+    }
+
+    function validCustomerBalanceFields(data) {
+      return data.keys().hasAll([
+          'balanceFils', 'previousBalanceFils', 'revision',
+          'lastTransactionId', 'lastAction'
+        ])
+        && data.keys().hasOnly([
+          'balanceFils', 'previousBalanceFils', 'revision',
+          'lastTransactionId', 'lastAction'
+        ])
+        && data.balanceFils is int
+        && data.balanceFils >= 0
+        && data.previousBalanceFils is int
+        && data.previousBalanceFils >= 0
+        && data.revision is int
+        && data.revision > 0
+        && data.lastTransactionId is string
+        && data.lastTransactionId.size() > 0
+        && data.lastAction in [
+          'CREATE_DEBT', 'CREATE_PAYMENT', 'CANCEL_DEBT', 'CANCEL_PAYMENT'
+        ];
+    }
+
+    function customerBalanceMatchesCreate(
+      storeId, customerId, transactionId, transactionData
+    ) {
+      let balancePath = customerBalancePath(storeId, customerId);
+      let balanceBeforeExists = exists(balancePath);
+      let balanceBefore = balanceBeforeExists
+        ? get(balancePath).data.balanceFils
+        : 0;
+      let revisionBefore = balanceBeforeExists
+        ? get(balancePath).data.revision
+        : 0;
+      let balanceAfter = getAfter(balancePath).data;
+      let isDebt = transactionData.type == 'DEBT';
+      let expectedAction = isDebt ? 'CREATE_DEBT' : 'CREATE_PAYMENT';
+      let expectedBalance = isDebt
+        ? balanceBefore + transactionData.amountFils
+        : balanceBefore - transactionData.amountFils;
+
+      return existsAfter(balancePath)
+        && (!balanceBeforeExists
+          || (balanceBefore is int
+            && balanceBefore >= 0
+            && revisionBefore is int
+            && revisionBefore > 0))
+        && validCustomerBalanceFields(balanceAfter)
+        && balanceAfter.previousBalanceFils == balanceBefore
+        && balanceAfter.balanceFils == expectedBalance
+        && (isDebt || balanceBefore >= transactionData.amountFils)
+        && balanceAfter.revision == revisionBefore + 1
+        && balanceAfter.lastTransactionId == transactionId
+        && balanceAfter.lastAction == expectedAction;
+    }
+
+    function customerBalanceMatchesCancellation(
+      storeId, customerId, transactionId, transactionData
+    ) {
+      let balancePath = customerBalancePath(storeId, customerId);
+      let balanceBefore = get(balancePath).data;
+      let balanceAfter = getAfter(balancePath).data;
+      let isDebt = transactionData.type == 'DEBT';
+      let expectedAction = isDebt ? 'CANCEL_DEBT' : 'CANCEL_PAYMENT';
+      let expectedBalance = isDebt
+        ? balanceBefore.balanceFils - transactionData.amountFils
+        : balanceBefore.balanceFils + transactionData.amountFils;
+
+      return exists(balancePath)
+        && existsAfter(balancePath)
+        && validCustomerBalanceFields(balanceBefore)
+        && validCustomerBalanceFields(balanceAfter)
+        && balanceAfter.previousBalanceFils == balanceBefore.balanceFils
+        && balanceAfter.balanceFils == expectedBalance
+        && (isDebt || balanceAfter.balanceFils >= 0)
+        && balanceAfter.revision == balanceBefore.revision + 1
+        && balanceAfter.lastTransactionId == transactionId
+        && balanceAfter.lastAction == expectedAction;
+    }
+
+    function customerBalanceMatchesNewTransaction(
+      storeId, customerId, balanceData, previousBalance, previousRevision
+    ) {
+      let transactionId = balanceData.lastTransactionId;
+      let transactionPath = customerTransactionPath(
+        storeId, customerId, transactionId
+      );
+      let transactionAfter = getAfter(transactionPath).data;
+      let isDebt = balanceData.lastAction == 'CREATE_DEBT';
+      let expectedType = isDebt ? 'DEBT' : 'PAYMENT';
+      let expectedBalance = isDebt
+        ? previousBalance + transactionAfter.amountFils
+        : previousBalance - transactionAfter.amountFils;
+
+      return balanceData.lastAction in ['CREATE_DEBT', 'CREATE_PAYMENT']
+        && !exists(transactionPath)
+        && existsAfter(transactionPath)
+        && transactionAfter.type == expectedType
+        && transactionAfter.status == 'ACTIVE'
+        && transactionAfter.amountFils is int
+        && transactionAfter.amountFils > 0
+        && transactionAfter.createdBy == request.auth.uid
+        && balanceData.previousBalanceFils == previousBalance
+        && balanceData.balanceFils == expectedBalance
+        && (isDebt || previousBalance >= transactionAfter.amountFils)
+        && balanceData.revision == previousRevision + 1;
+    }
+
+    function customerBalanceMatchesCancellationTransaction(
+      storeId, customerId, balanceData, previousBalance, previousRevision
+    ) {
+      let transactionId = balanceData.lastTransactionId;
+      let transactionPath = customerTransactionPath(
+        storeId, customerId, transactionId
+      );
+      let transactionBefore = get(transactionPath).data;
+      let transactionAfter = getAfter(transactionPath).data;
+      let isDebt = balanceData.lastAction == 'CANCEL_DEBT';
+      let expectedType = isDebt ? 'DEBT' : 'PAYMENT';
+      let expectedBalance = isDebt
+        ? previousBalance - transactionBefore.amountFils
+        : previousBalance + transactionBefore.amountFils;
+
+      return balanceData.lastAction in ['CANCEL_DEBT', 'CANCEL_PAYMENT']
+        && exists(transactionPath)
+        && existsAfter(transactionPath)
+        && transactionBefore.type == expectedType
+        && transactionBefore.status == 'ACTIVE'
+        && transactionBefore.amountFils is int
+        && transactionBefore.amountFils > 0
+        && transactionAfter.type == transactionBefore.type
+        && transactionAfter.amountFils == transactionBefore.amountFils
+        && transactionAfter.status == 'CANCELLED'
+        && balanceData.previousBalanceFils == previousBalance
+        && balanceData.balanceFils == expectedBalance
+        && (isDebt || balanceData.balanceFils >= 0)
+        && balanceData.revision == previousRevision + 1;
+    }
+
     function companyPath(storeId, companyId) {
       return /databases/$(database)/documents/stores/$(storeId)/companies/$(companyId);
     }
@@ -2285,6 +2431,9 @@ service cloud.firestore {
         && request.resource.data.status == 'ACTIVE'
         && request.resource.data.createdAt == request.time
         && request.resource.data.createdBy == request.auth.uid
+        && customerBalanceMatchesCreate(
+          storeId, customerId, transactionId, request.resource.data
+        )
         && (!('transactionId' in request.resource.data)
           || request.resource.data.transactionId == transactionId)
         && (!('note' in request.resource.data)
@@ -2303,8 +2452,54 @@ service cloud.firestore {
         && request.resource.data.cancelledBy == request.auth.uid
         && request.resource.data.cancellationReason is string
         && request.resource.data.cancellationReason.trim().size() > 0
+        && customerBalanceMatchesCancellation(
+          storeId, customerId, transactionId, resource.data
+        )
         && request.resource.data.diff(resource.data).affectedKeys()
              .hasOnly(['status', 'cancelledAt', 'cancelledBy', 'cancellationReason']);
+      allow delete: if false;
+    }
+
+    match /customers/{customerId}/balances/{balanceId} {
+      allow get, list: if balanceId == 'current'
+        && isFinancialStoreMember(storeId)
+        && (isAdmin(storeId)
+          || get(/databases/$(database)/documents/stores/$(storeId)/customers/$(customerId)).data.isActive == true);
+
+      allow create: if balanceId == 'current'
+        && isFinancialStoreMember(storeId)
+        && validCustomerBalanceFields(request.resource.data)
+        && request.resource.data.previousBalanceFils == 0
+        && request.resource.data.revision == 1
+        && customerBalanceMatchesNewTransaction(
+          storeId, customerId, request.resource.data, 0, 0
+        );
+
+      allow update: if balanceId == 'current'
+        && validCustomerBalanceFields(resource.data)
+        && validCustomerBalanceFields(request.resource.data)
+        && request.resource.data.previousBalanceFils == resource.data.balanceFils
+        && request.resource.data.revision == resource.data.revision + 1
+        && (
+          (request.resource.data.lastAction in ['CREATE_DEBT', 'CREATE_PAYMENT']
+            && isFinancialStoreMember(storeId)
+            && customerBalanceMatchesNewTransaction(
+              storeId,
+              customerId,
+              request.resource.data,
+              resource.data.balanceFils,
+              resource.data.revision
+            ))
+          || (request.resource.data.lastAction in ['CANCEL_DEBT', 'CANCEL_PAYMENT']
+            && isAdmin(storeId)
+            && customerBalanceMatchesCancellationTransaction(
+              storeId,
+              customerId,
+              request.resource.data,
+              resource.data.balanceFils,
+              resource.data.revision
+            ))
+        );
       allow delete: if false;
     }
 

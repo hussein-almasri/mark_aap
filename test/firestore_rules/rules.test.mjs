@@ -1246,6 +1246,15 @@ async function seedCustomer({
         normalizedName: name.trim().toLowerCase(),
       },
     );
+    await setDoc(doc(
+      db, 'stores', storeId, 'customers', customerId, 'balances', 'current',
+    ), {
+      balanceFils: 0,
+      previousBalanceFils: 0,
+      revision: 1,
+      lastTransactionId: 'baseline',
+      lastAction: 'CREATE_DEBT',
+    });
   });
 }
 
@@ -1267,6 +1276,89 @@ async function seedCustomerTransaction({
       createdBy: 'admin-1',
       status,
       ...cancellation,
+    });
+    if (status === 'ACTIVE') {
+      await setDoc(doc(
+        context.firestore(),
+        'stores', 'store-1', 'customers', customerId, 'balances', 'current',
+      ), {
+        balanceFils: 5000,
+        previousBalanceFils: 0,
+        revision: 1,
+        lastTransactionId: transactionId,
+        lastAction: 'CREATE_DEBT',
+      });
+    }
+  });
+}
+
+async function createCustomerMovement(
+  db,
+  transactionId,
+  type,
+  amountFils,
+  createdBy,
+) {
+  const transactionRef = doc(
+    db,
+    'stores', 'store-1', 'customers', 'customer-1', 'transactions', transactionId,
+  );
+  const balanceRef = doc(
+    db, 'stores', 'store-1', 'customers', 'customer-1', 'balances', 'current',
+  );
+  await runTransaction(db, async (transaction) => {
+    const balanceSnapshot = await transaction.get(balanceRef);
+    const balance = balanceSnapshot.data();
+    const previousBalanceFils = balance?.balanceFils ?? 0;
+    const previousRevision = balance?.revision ?? 0;
+    const isDebt = type === 'DEBT';
+    transaction.set(transactionRef, {
+      type,
+      amountFils,
+      createdAt: serverTimestamp(),
+      createdBy,
+      status: 'ACTIVE',
+    });
+    transaction.set(balanceRef, {
+      balanceFils: isDebt
+        ? previousBalanceFils + amountFils
+        : previousBalanceFils - amountFils,
+      previousBalanceFils,
+      revision: previousRevision + 1,
+      lastTransactionId: transactionId,
+      lastAction: `CREATE_${type}`,
+    });
+  });
+}
+
+async function cancelCustomerMovement(db, transactionId) {
+  const transactionRef = doc(
+    db,
+    'stores', 'store-1', 'customers', 'customer-1', 'transactions', transactionId,
+  );
+  const balanceRef = doc(
+    db, 'stores', 'store-1', 'customers', 'customer-1', 'balances', 'current',
+  );
+  await runTransaction(db, async (transaction) => {
+    const txnSnapshot = await transaction.get(transactionRef);
+    const balanceSnapshot = await transaction.get(balanceRef);
+    const txn = txnSnapshot.data();
+    const balance = balanceSnapshot.data();
+    const isDebt = txn.type === 'DEBT';
+    transaction.update(transactionRef, {
+      status: 'CANCELLED',
+      cancelledAt: serverTimestamp(),
+      cancelledBy: 'admin-1',
+      cancellationReason: 'Rules test',
+    });
+    transaction.set(balanceRef, {
+      balanceFils: isDebt
+        ? balance.balanceFils - txn.amountFils
+        : balance.balanceFils + txn.amountFils,
+      previousBalanceFils: balance.balanceFils,
+      revision: balance.revision + 1,
+      lastTransactionId: transactionId,
+      lastAction: `CANCEL_${txn.type}`,
     });
   });
 }
@@ -1344,12 +1436,7 @@ test('Admin can cancel ACTIVE transaction', async () => {
   await seedCustomer({ customerId: 'customer-1', isActive: true });
   await seedCustomerTransaction();
   const db = testEnv.authenticatedContext('admin-1').firestore();
-  await assertSucceeds(updateDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
-    status: 'CANCELLED',
-    cancelledAt: serverTimestamp(),
-    cancelledBy: 'admin-1',
-    cancellationReason: 'Admin cancellation',
-  }));
+  await assertSucceeds(cancelCustomerMovement(db, 'debt-1'));
   const debt = await getDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'));
   assert.equal(debt.data().status, 'CANCELLED');
 });
@@ -2149,14 +2236,7 @@ test('Employee cannot read transactions of an inactive customer', async () => {
 test('Admin can create DEBT', async () => {
   await seedCustomer({ customerId: 'customer-1', debtEnabled: true, isActive: true });
   const db = testEnv.authenticatedContext('admin-1').firestore();
-  await assertSucceeds(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
-    type: 'DEBT',
-    amountFils: 5000,
-    createdAt: serverTimestamp(),
-    createdBy: 'admin-1',
-    note: 'Test debt',
-    status: 'ACTIVE',
-  }));
+  await assertSucceeds(createCustomerMovement(db, 'debt-1', 'DEBT', 5000, 'admin-1'));
   const debt = await getDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'));
   assert.equal(debt.data().type, 'DEBT');
   assert.equal(debt.data().amountFils, 5000);
@@ -2166,14 +2246,7 @@ test('Employee can create DEBT when debtEnabled=true', async () => {
   await seedEmployee();
   await seedCustomer({ customerId: 'customer-1', debtEnabled: true, isActive: true });
   const db = testEnv.authenticatedContext('employee-1').firestore();
-  await assertSucceeds(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
-    type: 'DEBT',
-    amountFils: 3000,
-    createdAt: serverTimestamp(),
-    createdBy: 'employee-1',
-    note: 'Employee debt',
-    status: 'ACTIVE',
-  }));
+  await assertSucceeds(createCustomerMovement(db, 'debt-1', 'DEBT', 3000, 'employee-1'));
   const debt = await getDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'));
   assert.equal(debt.data().type, 'DEBT');
 });
@@ -2195,14 +2268,7 @@ test('Employee cannot create DEBT when debtEnabled=false', async () => {
 test('Admin can create DEBT when debtEnabled=false', async () => {
   await seedCustomer({ customerId: 'customer-1', debtEnabled: false, isActive: true });
   const db = testEnv.authenticatedContext('admin-1').firestore();
-  await assertSucceeds(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), {
-    type: 'DEBT',
-    amountFils: 1000,
-    createdAt: serverTimestamp(),
-    createdBy: 'admin-1',
-    note: 'Admin debt override',
-    status: 'ACTIVE',
-  }));
+  await assertSucceeds(createCustomerMovement(db, 'debt-1', 'DEBT', 1000, 'admin-1'));
   const debt = await getDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'));
   assert.equal(debt.data().type, 'DEBT');
 });
@@ -2210,14 +2276,8 @@ test('Admin can create DEBT when debtEnabled=false', async () => {
 test('Admin can create PAYMENT', async () => {
   await seedCustomer({ customerId: 'customer-1', debtEnabled: true, isActive: true });
   const db = testEnv.authenticatedContext('admin-1').firestore();
-  await assertSucceeds(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'payment-1'), {
-    type: 'PAYMENT',
-    amountFils: 2000,
-    createdAt: serverTimestamp(),
-    createdBy: 'admin-1',
-    note: 'Test payment',
-    status: 'ACTIVE',
-  }));
+  await assertSucceeds(createCustomerMovement(db, 'debt-0', 'DEBT', 2000, 'admin-1'));
+  await assertSucceeds(createCustomerMovement(db, 'payment-1', 'PAYMENT', 2000, 'admin-1'));
   const payment = await getDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'payment-1'));
   assert.equal(payment.data().type, 'PAYMENT');
 });
@@ -2225,15 +2285,10 @@ test('Admin can create PAYMENT', async () => {
 test('Employee can create PAYMENT', async () => {
   await seedEmployee();
   await seedCustomer({ customerId: 'customer-1', debtEnabled: true, isActive: true });
+  const adminDb = testEnv.authenticatedContext('admin-1').firestore();
   const db = testEnv.authenticatedContext('employee-1').firestore();
-  await assertSucceeds(setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'payment-1'), {
-    type: 'PAYMENT',
-    amountFils: 1500,
-    createdAt: serverTimestamp(),
-    createdBy: 'employee-1',
-    note: 'Employee payment',
-    status: 'ACTIVE',
-  }));
+  await assertSucceeds(createCustomerMovement(adminDb, 'debt-0', 'DEBT', 1500, 'admin-1'));
+  await assertSucceeds(createCustomerMovement(db, 'payment-1', 'PAYMENT', 1500, 'employee-1'));
   const payment = await getDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'payment-1'));
   assert.equal(payment.data().type, 'PAYMENT');
 });

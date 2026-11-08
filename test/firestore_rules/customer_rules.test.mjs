@@ -99,6 +99,18 @@ async function createCustomerBaseline(db, overrides = {}) {
     customerId: 'customer-1',
     normalizedName: normalizedCustomerName(name),
   });
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(
+      context.firestore(),
+      'stores', 'store-1', 'customers', 'customer-1', 'balances', 'current',
+    ), {
+      balanceFils: 0,
+      previousBalanceFils: 0,
+      revision: 1,
+      lastTransactionId: 'baseline',
+      lastAction: 'CREATE_DEBT',
+    });
+  });
 }
 
 // Helper: create a DEBT transaction baseline
@@ -111,7 +123,22 @@ async function createDebtBaseline(db, overrides = {}) {
     status: 'ACTIVE',
   };
   const debt = { ...defaultDebt, ...overrides };
-  await setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1'), debt);
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(
+      context.firestore(),
+      'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'debt-1',
+    ), debt);
+    await setDoc(doc(
+      context.firestore(),
+      'stores', 'store-1', 'customers', 'customer-1', 'balances', 'current',
+    ), {
+      balanceFils: debt.status == 'ACTIVE' ? debt.amountFils : 0,
+      previousBalanceFils: 0,
+      revision: 1,
+      lastTransactionId: 'debt-1',
+      lastAction: 'CREATE_DEBT',
+    });
+  });
 }
 
 // Helper: create a PAYMENT transaction baseline
@@ -124,7 +151,22 @@ async function createPaymentBaseline(db, overrides = {}) {
     status: 'ACTIVE',
   };
   const payment = { ...defaultPayment, ...overrides };
-  await setDoc(doc(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'payment-1'), payment);
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(
+      context.firestore(),
+      'stores', 'store-1', 'customers', 'customer-1', 'transactions', 'payment-1',
+    ), payment);
+    await setDoc(doc(
+      context.firestore(),
+      'stores', 'store-1', 'customers', 'customer-1', 'balances', 'current',
+    ), {
+      balanceFils: payment.status == 'ACTIVE' ? payment.amountFils : 0,
+      previousBalanceFils: 0,
+      revision: 1,
+      lastTransactionId: 'payment-1',
+      lastAction: 'CREATE_DEBT',
+    });
+  });
 }
 
 async function seedCancelledDebtBaseline(overrides = {}) {
@@ -528,24 +570,22 @@ function paymentPayload(createdBy, overrides = {}) {
   };
 }
 
-// 6.1 Admin can create a debt, create a payment, and cancel a transaction.
+// 6.1 Admin can create and cancel transactions only with matching balances.
 test('Admin can create debt and payment, then cancel', async () => {
   const db = testEnv.authenticatedContext('admin-1').firestore();
   await createCustomerBaseline(db);
 
-  await assertSucceeds(setDoc(TXN(db, 'store-1', 'customer-1', 'debt-1'), debtPayload('admin-1')));
-  await assertSucceeds(setDoc(TXN(db, 'store-1', 'customer-1', 'payment-1'), paymentPayload('admin-1')));
-
-  await assertSucceeds(updateDoc(TXN(db, 'store-1', 'customer-1', 'debt-1'), {
-    status: 'CANCELLED',
-    cancelledAt: serverTimestamp(),
-    cancelledBy: 'admin-1',
-    cancellationReason: 'Admin correction',
+  await assertSucceeds(repoCreateTxn(db, 'debt-1', {
+    type: 'DEBT', amountFils: 5000, createdBy: 'admin-1',
   }));
+  await assertSucceeds(repoCreateTxn(db, 'payment-1', {
+    type: 'PAYMENT', amountFils: 2000, createdBy: 'admin-1',
+  }));
+  await repoCancelTxn(db, 'payment-1');
 
-  const cancelled = await getDoc(TXN(db, 'store-1', 'customer-1', 'debt-1'));
+  const cancelled = await getDoc(TXN(db, 'store-1', 'customer-1', 'payment-1'));
   assert.equal(cancelled.data().status, 'CANCELLED');
-  assert.equal(cancelled.data().amountFils, 5000, 'amount must survive cancellation');
+  assert.equal(cancelled.data().amountFils, 2000, 'amount must survive cancellation');
 });
 
 // 6.2 Employee may create a DEBT when debtEnabled is true.
@@ -553,7 +593,9 @@ test('Employee can create debt when debtEnabled is true', async () => {
   const adminDb = testEnv.authenticatedContext('admin-1').firestore();
   const db = testEnv.authenticatedContext('employee-1').firestore();
   await createCustomerBaseline(adminDb, { debtEnabled: true });
-  await assertSucceeds(setDoc(TXN(db, 'store-1', 'customer-1', 'debt-emp'), debtPayload('employee-1')));
+  await assertSucceeds(repoCreateTxn(db, 'debt-emp', {
+    type: 'DEBT', amountFils: 5000, createdBy: 'employee-1',
+  }));
 });
 
 // 6.3 Employee may NOT create a DEBT when debtEnabled is false.
@@ -567,7 +609,9 @@ test('Employee cannot create debt when debtEnabled is false', async () => {
 test('Admin can create debt when debtEnabled is false', async () => {
   const db = testEnv.authenticatedContext('admin-1').firestore();
   await createCustomerBaseline(db, { debtEnabled: false });
-  await assertSucceeds(setDoc(TXN(db, 'store-1', 'customer-1', 'debt-admin'), debtPayload('admin-1')));
+  await assertSucceeds(repoCreateTxn(db, 'debt-admin', {
+    type: 'DEBT', amountFils: 5000, createdBy: 'admin-1',
+  }));
 });
 
 // 6.4 Employee may create a PAYMENT regardless of debtEnabled.
@@ -575,7 +619,12 @@ test('Employee can create payment when debtEnabled is false', async () => {
   const adminDb = testEnv.authenticatedContext('admin-1').firestore();
   const db = testEnv.authenticatedContext('employee-1').firestore();
   await createCustomerBaseline(adminDb, { debtEnabled: false });
-  await assertSucceeds(setDoc(TXN(db, 'store-1', 'customer-1', 'pay-emp'), paymentPayload('employee-1')));
+  await assertSucceeds(repoCreateTxn(adminDb, 'debt-admin', {
+    type: 'DEBT', amountFils: 5000, createdBy: 'admin-1',
+  }));
+  await assertSucceeds(repoCreateTxn(db, 'pay-emp', {
+    type: 'PAYMENT', amountFils: 2000, createdBy: 'employee-1',
+  }));
 });
 
 // 6.5 Employee cannot create a transaction for a non-DEBT/PAYMENT type.
@@ -594,7 +643,9 @@ test('Employee cannot cancel a transaction', async () => {
   const db = testEnv.authenticatedContext('employee-1').firestore();
   const adminDb = testEnv.authenticatedContext('admin-1').firestore();
   await createCustomerBaseline(adminDb);
-  await assertSucceeds(setDoc(TXN(adminDb, 'store-1', 'customer-1', 'debt-1'), debtPayload('admin-1')));
+  await assertSucceeds(repoCreateTxn(adminDb, 'debt-1', {
+    type: 'DEBT', amountFils: 5000, createdBy: 'admin-1',
+  }));
   await assertFails(updateDoc(TXN(db, 'store-1', 'customer-1', 'debt-1'), {
     status: 'CANCELLED',
     cancelledAt: serverTimestamp(),
@@ -607,7 +658,9 @@ test('Employee cannot cancel a transaction', async () => {
 test('Admin cannot cancel on behalf of another user', async () => {
   const db = testEnv.authenticatedContext('admin-1').firestore();
   await createCustomerBaseline(db);
-  await assertSucceeds(setDoc(TXN(db, 'store-1', 'customer-1', 'debt-1'), debtPayload('admin-1')));
+  await assertSucceeds(repoCreateTxn(db, 'debt-1', {
+    type: 'DEBT', amountFils: 5000, createdBy: 'admin-1',
+  }));
   await assertFails(updateDoc(TXN(db, 'store-1', 'customer-1', 'debt-1'), {
     status: 'CANCELLED',
     cancelledAt: serverTimestamp(),
@@ -642,7 +695,9 @@ test('Employee can list transactions of an active customer', async () => {
   const adminDb = testEnv.authenticatedContext('admin-1').firestore();
   const empDb = testEnv.authenticatedContext('employee-1').firestore();
   await createCustomerBaseline(adminDb, { isActive: true });
-  await assertSucceeds(setDoc(TXN(adminDb, 'store-1', 'customer-1', 'd1'), debtPayload('admin-1')));
+  await assertSucceeds(repoCreateTxn(adminDb, 'd1', {
+    type: 'DEBT', amountFils: 5000, createdBy: 'admin-1',
+  }));
   const snap = await getDocs(collection(empDb, 'stores', 'store-1', 'customers', 'customer-1', 'transactions'));
   assert.equal(snap.size, 1);
 });
@@ -688,7 +743,9 @@ test('Non-positive or non-int amount is denied', async () => {
 test('Transaction documents cannot be deleted', async () => {
   const db = testEnv.authenticatedContext('admin-1').firestore();
   await createCustomerBaseline(db);
-  await assertSucceeds(setDoc(TXN(db, 'store-1', 'customer-1', 'debt-1'), debtPayload('admin-1')));
+  await assertSucceeds(repoCreateTxn(db, 'debt-1', {
+    type: 'DEBT', amountFils: 5000, createdBy: 'admin-1',
+  }));
   await assertFails(deleteDoc(TXN(db, 'store-1', 'customer-1', 'debt-1')));
 });
 
@@ -721,7 +778,21 @@ async function repoCreateDebt(db, txnId, { amountFils, createdBy }) {
       err.code = 'already-exists';
       throw err;
     }
+    const balanceRef = doc(
+      db, 'stores', 'store-1', 'customers', 'customer-1', 'balances', 'current',
+    );
+    const balanceSnapshot = await tx.get(balanceRef);
+    const balance = balanceSnapshot.data();
+    const previousBalanceFils = balance?.balanceFils ?? 0;
+    const previousRevision = balance?.revision ?? 0;
     tx.set(ref, debtPayload(createdBy, { amountFils }));
+    tx.set(balanceRef, {
+      balanceFils: previousBalanceFils + amountFils,
+      previousBalanceFils,
+      revision: previousRevision + 1,
+      lastTransactionId: txnId,
+      lastAction: 'CREATE_DEBT',
+    });
     return txnId;
   });
 }
@@ -789,7 +860,9 @@ test('Reusing an id for a different operation is rejected explicitly', async () 
 test('Rules deny overwriting an existing ACTIVE transaction', async () => {
   const db = testEnv.authenticatedContext('admin-1').firestore();
   await createCustomerBaseline(db);
-  await assertSucceeds(setDoc(TXN(db, 'store-1', 'customer-1', 'op-x'), debtPayload('admin-1', { amountFils: 5000 })));
+  await assertSucceeds(repoCreateTxn(db, 'op-x', {
+    type: 'DEBT', amountFils: 5000, createdBy: 'admin-1',
+  }));
   // setDoc over an existing doc evaluates as an update; the update rule only
   // permits admin cancellation, so this is denied.
   await assertFails(setDoc(TXN(db, 'store-1', 'customer-1', 'op-x'), debtPayload('admin-1', { amountFils: 9999 })));
@@ -829,9 +902,8 @@ const cleanNote = (note) => {
   return trimmed === '' ? null : trimmed;
 };
 
-// Mirror of CustomerTransactionRepository.createDebt/createPayment: the
-// idempotency pre-check runs OUTSIDE the transaction as a collection query
-// (list-rule safe for employees), then a plain transaction.set follows.
+// Mirror of CustomerTransactionRepository.createDebt/createPayment with the
+// balance and transaction document committed as one operation.
 async function repoCreateTxn(db, txnId, { type, amountFils, createdBy, note }) {
   const ref = TXN(db, 'store-1', 'customer-1', txnId);
   const col = collection(db, 'stores', 'store-1', 'customers', 'customer-1', 'transactions');
@@ -851,18 +923,56 @@ async function repoCreateTxn(db, txnId, { type, amountFils, createdBy, note }) {
     ? debtPayload(createdBy, { amountFils, note: cleanNote(note) })
     : paymentPayload(createdBy, { amountFils, note: cleanNote(note) });
   return runTransaction(db, async (tx) => {
+    const balanceRef = doc(
+      db, 'stores', 'store-1', 'customers', 'customer-1', 'balances', 'current',
+    );
+    const balanceSnapshot = await tx.get(balanceRef);
+    const balance = balanceSnapshot.data();
+    const previousBalanceFils = balance?.balanceFils ?? 0;
+    const previousRevision = balance?.revision ?? 0;
+    const isDebt = type === 'DEBT';
     tx.set(ref, payload);
+    tx.set(balanceRef, {
+      balanceFils: isDebt
+        ? previousBalanceFils + amountFils
+        : previousBalanceFils - amountFils,
+      previousBalanceFils,
+      revision: previousRevision + 1,
+      lastTransactionId: txnId,
+      lastAction: `CREATE_${type}`,
+    });
     return txnId;
   });
 }
 
-// Mirror of the admin-only cancellation write (4 fields, nothing else).
+// Mirror of the admin-only paired cancellation writes.
 async function repoCancelTxn(db, txnId) {
-  await assertSucceeds(updateDoc(TXN(db, 'store-1', 'customer-1', txnId), {
-    status: 'CANCELLED',
-    cancelledBy: 'admin-1',
-    cancellationReason: 'Phase 4L balance test',
-    cancelledAt: serverTimestamp(),
+  await assertSucceeds(runTransaction(db, async (tx) => {
+    const transactionRef = TXN(db, 'store-1', 'customer-1', txnId);
+    const balanceRef = doc(
+      db, 'stores', 'store-1', 'customers', 'customer-1', 'balances', 'current',
+    );
+    const transactionSnapshot = await tx.get(transactionRef);
+    const balanceSnapshot = await tx.get(balanceRef);
+    const transaction = transactionSnapshot.data();
+    const balance = balanceSnapshot.data();
+    const isDebt = transaction.type === 'DEBT';
+
+    tx.update(transactionRef, {
+      status: 'CANCELLED',
+      cancelledBy: 'admin-1',
+      cancellationReason: 'Phase 4L balance test',
+      cancelledAt: serverTimestamp(),
+    });
+    tx.set(balanceRef, {
+      balanceFils: isDebt
+        ? balance.balanceFils - transaction.amountFils
+        : balance.balanceFils + transaction.amountFils,
+      previousBalanceFils: balance.balanceFils,
+      revision: balance.revision + 1,
+      lastTransactionId: txnId,
+      lastAction: `CANCEL_${transaction.type}`,
+    });
   }));
 }
 
@@ -944,6 +1054,9 @@ test('Debt note is persisted and returned', async () => {
 test('Payment note is persisted and returned', async () => {
   const db = testEnv.authenticatedContext('admin-1').firestore();
   await createCustomerBaseline(db);
+  await assertSucceeds(repoCreateTxn(db, 'note-p-debt', {
+    type: 'DEBT', amountFils: 2000, createdBy: 'admin-1',
+  }));
   await assertSucceeds(repoCreateTxn(db, 'note-p', {
     type: 'PAYMENT', amountFils: 2000, createdBy: 'admin-1', note: 'دفعة نقدية',
   }));
@@ -1027,6 +1140,9 @@ test('Employee can create payment with a stable transactionId', async () => {
   const adminDb = testEnv.authenticatedContext('admin-1').firestore();
   const db = testEnv.authenticatedContext('employee-1').firestore();
   await createCustomerBaseline(adminDb, { debtEnabled: false });
+  await assertSucceeds(repoCreateTxn(adminDb, 'emp-pay-debt', {
+    type: 'DEBT', amountFils: 1500, createdBy: 'admin-1',
+  }));
   await assertSucceeds(repoCreateTxn(db, 'emp-pay-1', {
     type: 'PAYMENT', amountFils: 1500, createdBy: 'employee-1',
   }));
@@ -1209,10 +1325,21 @@ test('Transaction creation accepts a matching transactionId and rejects a mismat
   const db = testEnv.authenticatedContext('admin-1').firestore();
   await createCustomerBaseline(db);
 
-  await assertSucceeds(setDoc(TXN(db, 'store-1', 'customer-1', 'matching-id'), debtPayload(
+  const batch = writeBatch(db);
+  batch.set(TXN(db, 'store-1', 'customer-1', 'matching-id'), debtPayload(
     'admin-1',
     { transactionId: 'matching-id' },
-  )));
+  ));
+  batch.set(doc(
+    db, 'stores', 'store-1', 'customers', 'customer-1', 'balances', 'current',
+  ), {
+    balanceFils: 5000,
+    previousBalanceFils: 0,
+    revision: 2,
+    lastTransactionId: 'matching-id',
+    lastAction: 'CREATE_DEBT',
+  });
+  await assertSucceeds(batch.commit());
   await assertFails(setDoc(TXN(db, 'store-1', 'customer-1', 'path-id'), debtPayload(
     'admin-1',
     { transactionId: 'different-id' },
