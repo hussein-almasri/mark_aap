@@ -13,6 +13,32 @@ class CustomerTransactionNotFoundException implements Exception {
 
 class InsufficientBalanceException implements Exception {
   const InsufficientBalanceException();
+
+  @override
+  String toString() => 'InsufficientBalanceException: payment exceeds balance.';
+}
+
+class CustomerBalanceNotInitializedException implements Exception {
+  const CustomerBalanceNotInitializedException();
+
+  @override
+  String toString() =>
+      'CustomerBalanceNotInitializedException: existing transactions require balance initialization.';
+}
+
+class CustomerDebtCancellationBlockedException implements Exception {
+  const CustomerDebtCancellationBlockedException();
+
+  @override
+  String toString() =>
+      'CustomerDebtCancellationBlockedException: cancel related payments first.';
+}
+
+class _CustomerBalance {
+  const _CustomerBalance({required this.balanceFils, required this.revision});
+
+  final int balanceFils;
+  final int revision;
 }
 
 class CustomerTransactionRepository {
@@ -22,16 +48,154 @@ class CustomerTransactionRepository {
   final FirebaseFirestore _firestore;
 
   CollectionReference<Map<String, dynamic>> _transactions(
-      String storeId, String customerId) =>
-      _firestore
-          .collection('stores')
-          .doc(storeId)
-          .collection('customers')
-          .doc(customerId)
-          .collection('transactions');
+    String storeId,
+    String customerId,
+  ) => _firestore
+      .collection('stores')
+      .doc(storeId)
+      .collection('customers')
+      .doc(customerId)
+      .collection('transactions');
 
   CollectionReference<Map<String, dynamic>> _customers(String storeId) =>
       _firestore.collection('stores').doc(storeId).collection('customers');
+
+  DocumentReference<Map<String, dynamic>> _balance(
+    String storeId,
+    String customerId,
+  ) =>
+      _customers(storeId).doc(customerId).collection('balances').doc('current');
+
+  Future<void> _ensureMissingBalanceHasNoHistory(
+    String storeId,
+    String customerId,
+  ) async {
+    final balance = await _balance(storeId, customerId).get();
+    if (balance.exists) return;
+
+    final existingTransactions = await _transactions(
+      storeId,
+      customerId,
+    ).limit(1).get();
+    if (existingTransactions.docs.isNotEmpty) {
+      throw const CustomerBalanceNotInitializedException();
+    }
+  }
+
+  Future<_CustomerBalance> _readBalance(
+    Transaction transaction,
+    DocumentReference<Map<String, dynamic>> balanceRef,
+  ) async {
+    final snapshot = await transaction.get(balanceRef);
+    if (!snapshot.exists) {
+      return const _CustomerBalance(balanceFils: 0, revision: 0);
+    }
+
+    return _parseBalance(snapshot.data()!);
+  }
+
+  _CustomerBalance _parseBalance(Map<String, dynamic> data) {
+    final balanceFils = data['balanceFils'];
+    final previousBalanceFils = data['previousBalanceFils'];
+    final revision = data['revision'];
+    final lastTransactionId = data['lastTransactionId'];
+    final lastAction = data['lastAction'];
+    if (balanceFils is! int ||
+        balanceFils < 0 ||
+        previousBalanceFils is! int ||
+        previousBalanceFils < 0 ||
+        revision is! int ||
+        revision <= 0 ||
+        lastTransactionId is! String ||
+        lastTransactionId.isEmpty ||
+        lastAction is! String ||
+        !const {
+          'CREATE_DEBT',
+          'CREATE_PAYMENT',
+          'CANCEL_DEBT',
+          'CANCEL_PAYMENT',
+        }.contains(lastAction)) {
+      throw StateError('Customer balance document has invalid fields.');
+    }
+    return _CustomerBalance(balanceFils: balanceFils, revision: revision);
+  }
+
+  Future<void> _cancelTransaction({
+    required String storeId,
+    required String customerId,
+    required String transactionId,
+    required String cancelledBy,
+    required String cancellationReason,
+  }) async {
+    final transactionRef = _transactions(
+      storeId,
+      customerId,
+    ).doc(transactionId);
+    final balanceRef = _balance(storeId, customerId);
+
+    await _firestore.runTransaction((transaction) async {
+      final transactionDocument = await transaction.get(transactionRef);
+      if (!transactionDocument.exists) {
+        throw CustomerTransactionNotFoundException();
+      }
+      final balanceDocument = await transaction.get(balanceRef);
+      if (!balanceDocument.exists) {
+        throw const CustomerBalanceNotInitializedException();
+      }
+
+      final model = CustomerTransactionModel.fromDocument(transactionDocument);
+      if (model.status != CustomerTransactionStatus.active) {
+        throw StateError('Only active transactions can be cancelled.');
+      }
+      if (model.cancelledAt != null ||
+          model.cancelledBy != null ||
+          model.cancellationReason != null) {
+        throw StateError(
+          'Active transaction must have no cancellation metadata.',
+        );
+      }
+
+      final balance = _parseBalance(balanceDocument.data()!);
+      final isDebt = model.type == CustomerTransactionType.debt;
+      final newBalance = isDebt
+          ? balance.balanceFils - model.amountFils
+          : balance.balanceFils + model.amountFils;
+      if (newBalance < 0) {
+        throw const CustomerDebtCancellationBlockedException();
+      }
+
+      transaction.update(transactionRef, {
+        'status': 'CANCELLED',
+        'cancelledAt': FieldValue.serverTimestamp(),
+        'cancelledBy': cancelledBy,
+        'cancellationReason': cancellationReason,
+      });
+      transaction.set(
+        balanceRef,
+        _nextBalance(
+          balanceFils: newBalance,
+          previousBalanceFils: balance.balanceFils,
+          revision: balance.revision + 1,
+          transactionId: transactionId,
+          action: isDebt ? 'CANCEL_DEBT' : 'CANCEL_PAYMENT',
+        ),
+      );
+    });
+  }
+
+  Map<String, Object> _nextBalance({
+    required int balanceFils,
+    required int previousBalanceFils,
+    required int revision,
+    required String transactionId,
+    required String action,
+  }) => {
+    'balanceFils': balanceFils,
+    'previousBalanceFils': previousBalanceFils,
+    'revision': revision,
+    'lastTransactionId': transactionId,
+    'lastAction': action,
+  };
 
   /// Mints a fresh transaction id locally (no network round-trip).
   ///
@@ -78,24 +242,26 @@ class CustomerTransactionRepository {
     String customerId,
     String transactionId,
   ) async {
-    final snapshot =
-        await _transactions(storeId, customerId)
-            .where(FieldPath.documentId, isEqualTo: transactionId)
-            .limit(1)
-            .get();
+    final snapshot = await _transactions(
+      storeId,
+      customerId,
+    ).where(FieldPath.documentId, isEqualTo: transactionId).limit(1).get();
     if (snapshot.docs.isEmpty) return null;
     return snapshot.docs.first.data();
   }
 
   Stream<List<CustomerTransactionModel>> watchTransactions(
-      String storeId, String customerId) {
+    String storeId,
+    String customerId,
+  ) {
     return _transactions(storeId, customerId)
         .orderBy('createdAt')
         .snapshots()
-        .map((snapshot) =>
-            snapshot.docs
-                .map((doc) => CustomerTransactionModel.fromDocument(doc))
-                .toList());
+        .map(
+          (snapshot) => snapshot.docs
+              .map((doc) => CustomerTransactionModel.fromDocument(doc))
+              .toList(),
+        );
   }
 
   Future<String> createDebt({
@@ -106,13 +272,11 @@ class CustomerTransactionRepository {
     String? transactionId,
     String? note,
   }) async {
-    final customerDoc =
-        await _customers(storeId).doc(customerId).get();
+    final customerDoc = await _customers(storeId).doc(customerId).get();
     if (!customerDoc.exists) {
       throw CustomerTransactionNotFoundException();
     }
-    final customer =
-        CustomerModel.fromDocument(customerDoc);
+    final customer = CustomerModel.fromDocument(customerDoc);
 
     final timestamp = FieldValue.serverTimestamp();
 
@@ -122,7 +286,8 @@ class CustomerTransactionRepository {
     // coordination and does not accept customer operation types.
     if (!customer.debtEnabled) {
       throw StateError(
-          'Customer debt is disabled. Admin may enable debt or override rules.');
+        'Customer debt is disabled. Admin may enable debt or override rules.',
+      );
     }
 
     if (amountFils <= 0) {
@@ -143,8 +308,12 @@ class CustomerTransactionRepository {
         transactionId,
       );
       if (existing != null) {
-        if (_isSameOperation(existing,
-            type: 'DEBT', amountFils: amountFils, createdBy: createdBy)) {
+        if (_isSameOperation(
+          existing,
+          type: 'DEBT',
+          amountFils: amountFils,
+          createdBy: createdBy,
+        )) {
           // Idempotent replay: the debt is already recorded. Report success
           // without touching Firestore.
           return debtRef.id;
@@ -155,7 +324,11 @@ class CustomerTransactionRepository {
       }
     }
 
+    await _ensureMissingBalanceHasNoHistory(storeId, customerId);
+    final balanceRef = _balance(storeId, customerId);
+
     return _firestore.runTransaction((transaction) async {
+      final balance = await _readBalance(transaction, balanceRef);
       // NOTE: the cancellation fields (cancelledAt/cancelledBy/
       // cancellationReason) are intentionally ABSENT here. A brand-new
       // transaction has no cancellation metadata, and FieldValue.delete() is
@@ -170,6 +343,16 @@ class CustomerTransactionRepository {
         'status': 'ACTIVE',
         'note': _cleanNote(note),
       });
+      transaction.set(
+        balanceRef,
+        _nextBalance(
+          balanceFils: balance.balanceFils + amountFils,
+          previousBalanceFils: balance.balanceFils,
+          revision: balance.revision + 1,
+          transactionId: debtRef.id,
+          action: 'CREATE_DEBT',
+        ),
+      );
 
       return debtRef.id;
     });
@@ -183,8 +366,7 @@ class CustomerTransactionRepository {
     String? transactionId,
     String? note,
   }) async {
-    final customerDoc =
-        await _customers(storeId).doc(customerId).get();
+    final customerDoc = await _customers(storeId).doc(customerId).get();
     if (!customerDoc.exists) {
       throw CustomerTransactionNotFoundException();
     }
@@ -211,15 +393,27 @@ class CustomerTransactionRepository {
         transactionId,
       );
       if (existing != null) {
-        if (_isSameOperation(existing,
-            type: 'PAYMENT', amountFils: amountFils, createdBy: createdBy)) {
+        if (_isSameOperation(
+          existing,
+          type: 'PAYMENT',
+          amountFils: amountFils,
+          createdBy: createdBy,
+        )) {
           return paymentRef.id;
         }
         throw const CustomerTransactionAlreadyExistsException();
       }
     }
 
+    await _ensureMissingBalanceHasNoHistory(storeId, customerId);
+    final balanceRef = _balance(storeId, customerId);
+
     return _firestore.runTransaction((transaction) async {
+      final balance = await _readBalance(transaction, balanceRef);
+      if (amountFils > balance.balanceFils) {
+        throw const InsufficientBalanceException();
+      }
+
       // Same as createDebt: cancellation fields are intentionally absent;
       // FieldValue.delete() is invalid in Transaction.set() without merge.
       transaction.set(paymentRef, {
@@ -230,16 +424,31 @@ class CustomerTransactionRepository {
         'status': 'ACTIVE',
         'note': _cleanNote(note),
       });
+      transaction.set(
+        balanceRef,
+        _nextBalance(
+          balanceFils: balance.balanceFils - amountFils,
+          previousBalanceFils: balance.balanceFils,
+          revision: balance.revision + 1,
+          transactionId: paymentRef.id,
+          action: 'CREATE_PAYMENT',
+        ),
+      );
 
       return paymentRef.id;
     });
   }
 
   Future<CustomerTransactionModel> getTransaction(
-      String storeId, String customerId, String transactionId) async {
+    String storeId,
+    String customerId,
+    String transactionId,
+  ) async {
     // Outside transaction: doc.get() returns Future<DocumentSnapshot>, need await
-    final document =
-        await _transactions(storeId, customerId).doc(transactionId).get();
+    final document = await _transactions(
+      storeId,
+      customerId,
+    ).doc(transactionId).get();
     if (!document.exists) {
       throw CustomerTransactionNotFoundException();
     }
@@ -247,12 +456,14 @@ class CustomerTransactionRepository {
   }
 
   Future<List<CustomerTransactionModel>> listTransactions(
-      String storeId, String customerId) async {
+    String storeId,
+    String customerId,
+  ) async {
     // Outside transaction: collection.get() returns Future<QuerySnapshot>, need await
-    final snapshot =
-        await _transactions(storeId, customerId)
-            .orderBy('createdAt')
-            .get();
+    final snapshot = await _transactions(
+      storeId,
+      customerId,
+    ).orderBy('createdAt').get();
     return snapshot.docs
         .map((doc) => CustomerTransactionModel.fromDocument(doc))
         .toList();
@@ -265,8 +476,7 @@ class CustomerTransactionRepository {
     return 0;
   }
 
-  Future<int> calculateBalanceAsync(
-      String storeId, String customerId) async {
+  Future<int> calculateBalanceAsync(String storeId, String customerId) async {
     final snapshot = await _firestore
         .collection('stores')
         .doc(storeId)
@@ -304,46 +514,13 @@ class CustomerTransactionRepository {
     required String transactionId,
     required String cancelledBy,
     required String cancellationReason,
-  }) async {
-    await _firestore.runTransaction((transaction) async {
-      final transactionRef =
-          _transactions(storeId, customerId).doc(transactionId);
-      // Inside transaction, use await with transaction.get()
-      final transactionDocument = await transaction.get(transactionRef);
-      if (!transactionDocument.exists) {
-        throw CustomerTransactionNotFoundException();
-      }
-      final model =
-          CustomerTransactionModel.fromDocument(transactionDocument);
-
-      // Only admin can cancel; employee cancellation is denied at Rules level
-      // and as a runtime guard
-
-      // Active transaction must have no cancellation metadata
-      if (model.status == CustomerTransactionStatus.active) {
-        if (model.cancelledAt != null ||
-            model.cancelledBy != null ||
-            model.cancellationReason != null) {
-          throw StateError(
-              'Active transaction must have no cancellation metadata.');
-        }
-      }
-
-      transaction.update(transactionRef, {
-        'status': 'CANCELLED',
-        'cancelledAt': FieldValue.serverTimestamp(),
-        'cancelledBy': cancelledBy,
-        'cancellationReason': cancellationReason,
-      });
-
-      // Preserve the transaction in history; only update status/metadata.
-      // Cancelled DEBT increases available balance (payment capacity restored).
-      // Cancelled PAYMENT decreases available balance accordingly.
-      // The cancellation metadata written above is the durable operation
-      // record; no separate stores/{storeId}/operations document is touched
-      // because that collection does not accept customer operation types.
-    });
-  }
+  }) => _cancelTransaction(
+    storeId: storeId,
+    customerId: customerId,
+    transactionId: transactionId,
+    cancelledBy: cancelledBy,
+    cancellationReason: cancellationReason,
+  );
 
   Future<void> adminCancelTransaction({
     required String storeId,
@@ -351,35 +528,11 @@ class CustomerTransactionRepository {
     required String transactionId,
     required String cancelledBy,
     required String cancellationReason,
-  }) async {
-    await _firestore.runTransaction((transaction) async {
-      final transactionRef =
-          _transactions(storeId, customerId).doc(transactionId);
-      // Inside transaction, use await with transaction.get()
-      final transactionDocument = await transaction.get(transactionRef);
-      if (!transactionDocument.exists) {
-        throw CustomerTransactionNotFoundException();
-      }
-      final model =
-          CustomerTransactionModel.fromDocument(transactionDocument);
-
-      // Admin can cancel any transaction
-      // Active transaction must have no cancellation metadata
-      if (model.status == CustomerTransactionStatus.active) {
-        if (model.cancelledAt != null ||
-            model.cancelledBy != null ||
-            model.cancellationReason != null) {
-          throw StateError(
-              'Active transaction must have no cancellation metadata.');
-}
-}
-
-      transaction.update(transactionRef, {
-        'status': 'CANCELLED',
-        'cancelledAt': FieldValue.serverTimestamp(),
-        'cancelledBy': cancelledBy,
-        'cancellationReason': cancellationReason,
-      });
-    });
-  }
+  }) => _cancelTransaction(
+    storeId: storeId,
+    customerId: customerId,
+    transactionId: transactionId,
+    cancelledBy: cancelledBy,
+    cancellationReason: cancellationReason,
+  );
 }
