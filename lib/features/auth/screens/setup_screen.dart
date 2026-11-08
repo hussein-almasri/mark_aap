@@ -12,7 +12,7 @@ class SetupScreen extends StatefulWidget {
 class _SetupScreenState extends State<SetupScreen> {
   final _formKey = GlobalKey<FormState>();
 
-  final _storeNameController = TextEditingController(text: 'آدم');
+  final _storeNameController = TextEditingController(text: 'رَفّ');
   final _ownerNameController = TextEditingController();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
@@ -66,9 +66,9 @@ class _SetupScreenState extends State<SetupScreen> {
       );
     } finally {
       if (mounted) {
-            setState(() {
-        _isLoading = false;
-      });
+        setState(() {
+          _isLoading = false;
+        });
       }
     }
   }
@@ -112,7 +112,7 @@ class _SetupScreenState extends State<SetupScreen> {
                       const SizedBox(height: 20),
 
                       const Text(
-                        'مرحبًا بك في آدم',
+                        'مرحبًا بك في رَفّ',
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           fontSize: 28,
@@ -140,7 +140,7 @@ class _SetupScreenState extends State<SetupScreen> {
                         textInputAction: TextInputAction.next,
                         decoration: const InputDecoration(
                           labelText: 'اسم المتجر',
-                          hintText: 'مثال: آدم',
+                          hintText: 'مثال: رَفّ',
                           prefixIcon: Icon(Icons.store_rounded),
                           border: OutlineInputBorder(),
                         ),

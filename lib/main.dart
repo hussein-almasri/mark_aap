@@ -5,6 +5,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'core/theme/app_theme.dart';
 import 'firebase_options.dart';
 import 'features/auth/auth_gate.dart';
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
@@ -23,7 +24,7 @@ class AdamApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
 
-      title: 'آدم',
+      title: 'RAFF',
 
       locale: const Locale('ar'),
 
