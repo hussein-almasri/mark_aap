@@ -5,6 +5,7 @@ import '../../../data/models/company_model.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/repositories/company_repository.dart';
 import '../../../data/repositories/purchase_invoice_repository.dart';
+import '../../../shared/widgets/raff_ui.dart';
 import '../purchase_invoice_form_validator.dart';
 
 /// Full-screen form for creating a purchase invoice.
@@ -135,7 +136,10 @@ class _PurchaseInvoiceFormScreenState extends State<PurchaseInvoiceFormScreen> {
     final supplierDebt = PurchaseInvoiceFormValidator.tryParseJodField(
       _supplierDebtController.text,
     );
-    if (total == null || shopCash == null || outsideCash == null || supplierDebt == null) {
+    if (total == null ||
+        shopCash == null ||
+        outsideCash == null ||
+        supplierDebt == null) {
       _showMessage('تحقق من المبالغ المُدخلة.');
       return;
     }
@@ -191,21 +195,25 @@ class _PurchaseInvoiceFormScreenState extends State<PurchaseInvoiceFormScreen> {
 
   void _showMessage(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('فاتورة شراء جديدة')),
-      body: SafeArea(
-        child: _isLoadingCompanies
-            ? const Center(child: CircularProgressIndicator())
-            : _companiesError != null
-            ? _buildCompaniesFailure()
-            : (_activeCompanies?.isEmpty ?? true)
-            ? const Center(child: Text('لا توجد شركات نشطة. أضف شركة أولاً.'))
-            : _buildForm(),
+      body: RaffResponsiveContent(
+        child: SafeArea(
+          child: _isLoadingCompanies
+              ? const Center(child: CircularProgressIndicator())
+              : _companiesError != null
+              ? _buildCompaniesFailure()
+              : (_activeCompanies?.isEmpty ?? true)
+              ? const Center(child: Text('لا توجد شركات نشطة. أضف شركة أولاً.'))
+              : _buildForm(),
+        ),
       ),
       bottomNavigationBar: _buildSaveBar(),
     );
@@ -260,10 +268,7 @@ class _PurchaseInvoiceFormScreenState extends State<PurchaseInvoiceFormScreen> {
           style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
         ),
         const SizedBox(height: 8),
-        _buildSplitField(
-          controller: _shopCashController,
-          label: 'كاش الصندوق',
-        ),
+        _buildSplitField(controller: _shopCashController, label: 'كاش الصندوق'),
         const SizedBox(height: 12),
         _buildSplitField(
           controller: _outsideCashController,

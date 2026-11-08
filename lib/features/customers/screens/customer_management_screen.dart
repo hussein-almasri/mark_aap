@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../../data/models/customer_model.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/repositories/customer_repository.dart';
+import '../../../shared/widgets/raff_ui.dart';
 import '../widgets/customer_form.dart' show showAddCustomerDialog;
 
 class CustomerAlreadyExistsException implements Exception {
@@ -28,8 +29,7 @@ class CustomerManagementScreen extends StatefulWidget {
 }
 
 class _CustomerManagementScreenState extends State<CustomerManagementScreen> {
-  late final CustomerRepository _repository =
-      CustomerRepository();
+  late final CustomerRepository _repository = CustomerRepository();
   List<CustomerModel>? _customers;
   final Set<String> _processingCustomerIds = {};
   bool _isLoading = true;
@@ -52,8 +52,7 @@ class _CustomerManagementScreenState extends State<CustomerManagementScreen> {
     });
     try {
       final storeId = widget.user.storeId;
-      final allCustomers =
-          await _repository.listCustomers(storeId);
+      final allCustomers = await _repository.listCustomers(storeId);
       setState(() {
         _customers = allCustomers;
         _isLoading = false;
@@ -75,8 +74,7 @@ class _CustomerManagementScreenState extends State<CustomerManagementScreen> {
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: Text('$action الدين؟'),
-        content: Text(
-            'هل تريد $action دين ${customer.name}؟'),
+        content: Text('هل تريد $action دين ${customer.name}؟'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(false),
@@ -118,9 +116,9 @@ class _CustomerManagementScreenState extends State<CustomerManagementScreen> {
 
   void _showMessage(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   List<CustomerModel> _getFilteredCustomers() {
@@ -140,8 +138,7 @@ class _CustomerManagementScreenState extends State<CustomerManagementScreen> {
   }
 
   Widget _buildCustomerCard(CustomerModel customer) {
-    final isProcessing =
-        _processingCustomerIds.contains(customer.customerId);
+    final isProcessing = _processingCustomerIds.contains(customer.customerId);
     return Card(
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 8),
@@ -149,8 +146,7 @@ class _CustomerManagementScreenState extends State<CustomerManagementScreen> {
           children: [
             ListTile(
               title: Text(customer.name),
-              subtitle: customer.phone != null &&
-                      customer.phone!.isNotEmpty
+              subtitle: customer.phone != null && customer.phone!.isNotEmpty
                   ? Text(customer.phone!)
                   : const Text(''),
               trailing: Row(
@@ -158,7 +154,9 @@ class _CustomerManagementScreenState extends State<CustomerManagementScreen> {
                 children: [
                   if (!isProcessing) ...[
                     Tooltip(
-                      message: customer.debtEnabled ? 'تعطيل الدين' : 'تمكين الدين',
+                      message: customer.debtEnabled
+                          ? 'تعطيل الدين'
+                          : 'تمكين الدين',
                       child: IconButton(
                         icon: Icon(
                           customer.debtEnabled
@@ -177,9 +175,7 @@ class _CustomerManagementScreenState extends State<CustomerManagementScreen> {
                 ],
               ),
             ),
-            if (!_showInactive) ...[
-              const Divider(height: 1),
-            ],
+            if (!_showInactive) ...[const Divider(height: 1)],
           ],
         ),
       ),
@@ -189,8 +185,7 @@ class _CustomerManagementScreenState extends State<CustomerManagementScreen> {
   Widget _buildEmptyState() {
     final filtered = _getFilteredCustomers();
     return filtered.isEmpty
-        ? const Center(
-            child: Text('لا توجد عملاء مطابقة للبحث.'))
+        ? const Center(child: Text('لا توجد عملاء مطابقة للبحث.'))
         : const SizedBox.shrink();
   }
 
@@ -211,18 +206,18 @@ class _CustomerManagementScreenState extends State<CustomerManagementScreen> {
   }
 
   Widget _buildLoadFailure() => Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(_loadError ?? 'تعذر تحميل العملاء.'),
-            const SizedBox(height: 12),
-            FilledButton(
-              onPressed: _loadCustomers,
-              child: const Text('إعادة المحاولة'),
-            ),
-          ],
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(_loadError ?? 'تعذر تحميل العملاء.'),
+        const SizedBox(height: 12),
+        FilledButton(
+          onPressed: _loadCustomers,
+          child: const Text('إعادة المحاولة'),
         ),
-      );
+      ],
+    ),
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -235,18 +230,18 @@ class _CustomerManagementScreenState extends State<CustomerManagementScreen> {
 
     return Scaffold(
       appBar: _buildAppBar(),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : _loadError != null
-              ? _buildLoadFailure()
-              : Column(
-                  children: [
-                    Expanded(
-                      child: _buildCustomerList(),
-                    ),
-                    _buildBottomAddButton(),
-                  ],
-                ),
+      body: RaffResponsiveContent(
+        child: _isLoading
+            ? const Center(child: CircularProgressIndicator())
+            : _loadError != null
+            ? _buildLoadFailure()
+            : Column(
+                children: [
+                  Expanded(child: _buildCustomerList()),
+                  _buildBottomAddButton(),
+                ],
+              ),
+      ),
     );
   }
 
@@ -256,9 +251,17 @@ class _CustomerManagementScreenState extends State<CustomerManagementScreen> {
         ? _buildEmptyState()
         : ListView.builder(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
-            itemCount: customers.length,
-            itemBuilder: (context, index) =>
-                _buildCustomerCard(customers[index]),
+            itemCount: customers.length + 1,
+            itemBuilder: (context, index) => index == 0
+                ? Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: RaffSectionHeading(
+                      title: 'العملاء',
+                      subtitle: '${customers.length} عميل معروض',
+                      icon: Icons.people_alt_outlined,
+                    ),
+                  )
+                : _buildCustomerCard(customers[index - 1]),
           );
   }
 

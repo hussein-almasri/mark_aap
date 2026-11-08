@@ -6,6 +6,7 @@ import '../../../core/utils/price_amount.dart';
 import '../../../data/models/supplier_payment_model.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/repositories/supplier_payment_repository.dart';
+import '../../../shared/widgets/raff_ui.dart';
 import 'supplier_payment_details_screen.dart';
 
 /// Lists the store's supplier payments, newest first.
@@ -84,7 +85,7 @@ class _SupplierPaymentLogScreenState extends State<SupplierPaymentLogScreen> {
           ? const Center(child: CircularProgressIndicator())
           : _loadError != null
           ? _buildLoadFailure()
-          : _buildPaymentList(),
+          : RaffResponsiveContent(child: _buildPaymentList()),
     );
   }
 

@@ -9,6 +9,7 @@ import '../../../data/models/cash_withdrawal_model.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/repositories/cash_box_repository.dart';
 import '../../../data/repositories/cash_withdrawal_repository.dart';
+import '../../shared/widgets/raff_ui.dart';
 
 /// Shop cash box: current balance, opening balance, deposit totals, effective
 /// withdrawals and the merged movement ledger. Admins may also record a
@@ -239,76 +240,78 @@ class _CashBoxScreenState extends State<CashBoxScreen> {
 
     return Scaffold(
       appBar: AppBar(title: const Text('رَفّ | صندوق النقد')),
-      body: RefreshIndicator(
-        onRefresh: _load,
-        child: ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            if (_error != null) ...[
-              _ErrorBanner(message: _errorMessage(_error!), onRetry: _load),
-              const SizedBox(height: 12),
-            ],
-            if (summary != null) ...[
-              _BalanceCard(summary: summary),
-              const SizedBox(height: 12),
-            ],
-            if (openingBalance == null && _error == null) ...[
-              _MissingOpeningBanner(
-                isAdmin: _isAdmin,
-                onSet: _isAdmin ? _editOpeningBalance : null,
-              ),
-              const SizedBox(height: 12),
-            ],
-            if (openingBalance != null) ...[
-              _OpeningCard(
-                openingBalance: openingBalance,
-                isAdmin: _isAdmin,
-                onAmend: _isAdmin ? _editOpeningBalance : null,
-              ),
-              const SizedBox(height: 12),
-            ],
-            if (_isAdmin) ...[
-              FilledButton.icon(
-                onPressed: _loading ? null : _recordDeposit,
-                icon: const Icon(Icons.add_circle_outline),
-                label: const Text('تسجيل إيداع نقدي'),
+      body: RaffResponsiveContent(
+        child: RefreshIndicator(
+          onRefresh: _load,
+          child: ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              if (_error != null) ...[
+                _ErrorBanner(message: _errorMessage(_error!), onRetry: _load),
+                const SizedBox(height: 12),
+              ],
+              if (summary != null) ...[
+                _BalanceCard(summary: summary),
+                const SizedBox(height: 12),
+              ],
+              if (openingBalance == null && _error == null) ...[
+                _MissingOpeningBanner(
+                  isAdmin: _isAdmin,
+                  onSet: _isAdmin ? _editOpeningBalance : null,
+                ),
+                const SizedBox(height: 12),
+              ],
+              if (openingBalance != null) ...[
+                _OpeningCard(
+                  openingBalance: openingBalance,
+                  isAdmin: _isAdmin,
+                  onAmend: _isAdmin ? _editOpeningBalance : null,
+                ),
+                const SizedBox(height: 12),
+              ],
+              if (_isAdmin) ...[
+                FilledButton.icon(
+                  onPressed: _loading ? null : _recordDeposit,
+                  icon: const Icon(Icons.add_circle_outline),
+                  label: const Text('تسجيل إيداع نقدي'),
+                ),
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  onPressed: _loading || _isWritingWithdrawal
+                      ? null
+                      : _recordWithdrawal,
+                  icon: const Icon(Icons.money_off_csred_outlined),
+                  label: const Text('تسجيل سحب نقدي'),
+                ),
+                const SizedBox(height: 16),
+              ],
+              Text(
+                'سجل حركات الصندوق',
+                style: Theme.of(context).textTheme.titleMedium,
               ),
               const SizedBox(height: 8),
-              OutlinedButton.icon(
-                onPressed: _loading || _isWritingWithdrawal
-                    ? null
-                    : _recordWithdrawal,
-                icon: const Icon(Icons.money_off_csred_outlined),
-                label: const Text('تسجيل سحب نقدي'),
-              ),
-              const SizedBox(height: 16),
+              if (_loading && snapshot == null)
+                const Padding(
+                  padding: EdgeInsets.all(24),
+                  child: Center(child: CircularProgressIndicator()),
+                )
+              else if (summary != null && summary.movements.isEmpty)
+                const Card(
+                  child: Padding(
+                    padding: EdgeInsets.all(16),
+                    child: Text('لا توجد حركات مسجلة بعد.'),
+                  ),
+                )
+              else if (summary != null)
+                ...summary.movements.map(
+                  (movement) => _MovementTile(
+                    movement: movement,
+                    onCancel: _cancelAction(movement),
+                    isCancelling: _isWritingWithdrawal,
+                  ),
+                ),
             ],
-            Text(
-              'سجل حركات الصندوق',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            const SizedBox(height: 8),
-            if (_loading && snapshot == null)
-              const Padding(
-                padding: EdgeInsets.all(24),
-                child: Center(child: CircularProgressIndicator()),
-              )
-            else if (summary != null && summary.movements.isEmpty)
-              const Card(
-                child: Padding(
-                  padding: EdgeInsets.all(16),
-                  child: Text('لا توجد حركات مسجلة بعد.'),
-                ),
-              )
-            else if (summary != null)
-              ...summary.movements.map(
-                (movement) => _MovementTile(
-                  movement: movement,
-                  onCancel: _cancelAction(movement),
-                  isCancelling: _isWritingWithdrawal,
-                ),
-              ),
-          ],
+          ),
         ),
       ),
     );

@@ -6,6 +6,7 @@ import '../../../core/utils/price_amount.dart';
 import '../../../data/models/supplier_payment_model.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/repositories/supplier_payment_repository.dart';
+import '../../../shared/widgets/raff_ui.dart';
 
 /// Detail view of one supplier payment, with admin cancellation when active.
 ///
@@ -194,7 +195,7 @@ class _SupplierPaymentDetailsScreenState
           ? const Center(child: CircularProgressIndicator())
           : _loadError != null
           ? _buildLoadFailure()
-          : _buildDetails(),
+          : RaffResponsiveContent(child: _buildDetails()),
     );
   }
 

@@ -8,6 +8,7 @@ import '../../../core/utils/price_amount.dart';
 import '../../../data/models/purchase_invoice_model.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/repositories/purchase_invoice_repository.dart';
+import '../../../shared/widgets/raff_ui.dart';
 import '../../../data/repositories/user_repository.dart';
 
 /// Detail view of one purchase invoice.
@@ -245,7 +246,7 @@ class _PurchaseInvoiceDetailsScreenState
           ? const Center(child: CircularProgressIndicator())
           : _loadError != null
           ? _buildLoadFailure()
-          : _buildDetails(),
+          : RaffResponsiveContent(child: _buildDetails()),
     );
   }
 

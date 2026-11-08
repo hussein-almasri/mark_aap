@@ -29,8 +29,11 @@ class AppTheme {
       backgroundColor: ivory,
       foregroundColor: petroleum,
       centerTitle: false,
+      toolbarHeight: 68,
+      titleSpacing: 20,
       elevation: 0,
       scrolledUnderElevation: 0,
+      surfaceTintColor: Colors.transparent,
       titleTextStyle: TextStyle(
         color: petroleum,
         fontSize: 20,
@@ -68,6 +71,11 @@ class AppTheme {
         minimumSize: const Size(0, 50),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       ),
+    ),
+    floatingActionButtonTheme: const FloatingActionButtonThemeData(
+      backgroundColor: petroleum,
+      foregroundColor: Colors.white,
+      shape: StadiumBorder(),
     ),
     outlinedButtonTheme: OutlinedButtonThemeData(
       style: OutlinedButton.styleFrom(
@@ -110,6 +118,16 @@ class AppTheme {
       color: Color(0xFFE5E9E4),
       thickness: 1,
       space: 1,
+    ),
+    dialogTheme: DialogThemeData(
+      backgroundColor: Colors.white,
+      surfaceTintColor: Colors.transparent,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+    ),
+    bottomSheetTheme: const BottomSheetThemeData(
+      backgroundColor: Colors.white,
+      surfaceTintColor: Colors.transparent,
+      showDragHandle: true,
     ),
     snackBarTheme: const SnackBarThemeData(
       behavior: SnackBarBehavior.floating,

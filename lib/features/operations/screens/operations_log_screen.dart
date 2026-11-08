@@ -8,6 +8,7 @@ import '../../../core/utils/price_amount.dart';
 import '../../../data/models/financial_operation_model.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/repositories/financial_operation_repository.dart';
+import '../../../shared/widgets/raff_ui.dart';
 import '../../../data/repositories/user_repository.dart';
 
 class OperationsLogScreen extends StatefulWidget {
@@ -65,14 +66,13 @@ class _OperationsLogScreenState extends State<OperationsLogScreen> {
       );
       final names = <String, String?>{};
       await Future.wait(
-        entries
-            .map((entry) => entry.operation.createdBy)
-            .toSet()
-            .map((uid) async {
-              names[uid] = uid == widget.user.uid
-                  ? widget.user.name
-                  : await _userRepository.getDisplayName(uid: uid);
-            }),
+        entries.map((entry) => entry.operation.createdBy).toSet().map((
+          uid,
+        ) async {
+          names[uid] = uid == widget.user.uid
+              ? widget.user.name
+              : await _userRepository.getDisplayName(uid: uid);
+        }),
       );
       if (!mounted) return;
       setState(() {
@@ -128,7 +128,7 @@ class _OperationsLogScreenState extends State<OperationsLogScreen> {
         ? const Center(child: CircularProgressIndicator())
         : _loadError != null
         ? _buildLoadFailure()
-        : _buildLog(),
+        : RaffResponsiveContent(child: _buildLog()),
   );
 
   Widget _buildLoadFailure() => Center(
@@ -232,8 +232,12 @@ class _OperationsLogScreenState extends State<OperationsLogScreen> {
     final operation = entry.operation;
     final isCancellation = entry.isCancellation;
     final statusColor = switch (operation.status) {
-      FinancialOperationStatus.completed => Theme.of(context).colorScheme.primary,
-      FinancialOperationStatus.processing => Theme.of(context).colorScheme.tertiary,
+      FinancialOperationStatus.completed => Theme.of(
+        context,
+      ).colorScheme.primary,
+      FinancialOperationStatus.processing => Theme.of(
+        context,
+      ).colorScheme.tertiary,
       FinancialOperationStatus.failed => Theme.of(context).colorScheme.error,
     };
     final userName = _userNames[operation.createdBy] ?? 'غير معروف';
@@ -263,9 +267,7 @@ class _OperationsLogScreenState extends State<OperationsLogScreen> {
             ),
             const SizedBox(height: 8),
             Text('التاريخ: ${_formatTimestamp(operation.createdAt)}'),
-            Text(
-              '${isCancellation ? 'ألغى العملية' : 'المستخدم'}: $userName',
-            ),
+            Text('${isCancellation ? 'ألغى العملية' : 'المستخدم'}: $userName'),
             if (entry.amountFils != null)
               Text('المبلغ: ${PriceAmount.formatJod2(entry.amountFils!)}'),
             if (isCancellation) ...[

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../../data/models/customer_model.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/repositories/customer_repository.dart';
+import '../../../shared/widgets/raff_ui.dart';
 import 'customer_details_screen.dart';
 
 class CustomerLookupScreen extends StatefulWidget {
@@ -41,8 +42,9 @@ class _CustomerLookupScreenState extends State<CustomerLookupScreen> {
       _loadError = null;
     });
     try {
-      final customers =
-          await _repository.listActiveCustomers(widget.user.storeId);
+      final customers = await _repository.listActiveCustomers(
+        widget.user.storeId,
+      );
       if (!mounted) return;
       setState(() {
         _customers = customers;
@@ -85,21 +87,32 @@ class _CustomerLookupScreenState extends State<CustomerLookupScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: Text(widget.title)),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-            child: TextField(
-              decoration: const InputDecoration(
-                hintText: 'ابحث بالاسم أو رقم الهاتف',
-                prefixIcon: Icon(Icons.search),
-                border: OutlineInputBorder(),
+      body: RaffResponsiveContent(
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+              child: Column(
+                children: [
+                  RaffSectionHeading(
+                    title: widget.title,
+                    subtitle: 'ابحث باسم العميل أو رقم هاتفه',
+                    icon: Icons.people_alt_outlined,
+                  ),
+                  const SizedBox(height: 14),
+                  TextField(
+                    decoration: const InputDecoration(
+                      hintText: 'ابحث بالاسم أو رقم الهاتف',
+                      prefixIcon: Icon(Icons.search),
+                    ),
+                    onChanged: (value) => setState(() => _searchQuery = value),
+                  ),
+                ],
               ),
-              onChanged: (value) => setState(() => _searchQuery = value),
             ),
-          ),
-          Expanded(child: _buildBody()),
-        ],
+            Expanded(child: _buildBody()),
+          ],
+        ),
       ),
     );
   }
@@ -135,7 +148,21 @@ class _CustomerLookupScreenState extends State<CustomerLookupScreen> {
       itemBuilder: (context, index) {
         final customer = customers[index];
         return Card(
+          margin: const EdgeInsets.symmetric(vertical: 5),
           child: ListTile(
+            leading: Container(
+              width: 42,
+              height: 42,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.secondaryContainer,
+                borderRadius: BorderRadius.circular(13),
+              ),
+              child: Icon(
+                Icons.person_outline,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+            ),
             title: Text(customer.name),
             subtitle: customer.phone != null && customer.phone!.isNotEmpty
                 ? Text(customer.phone!)

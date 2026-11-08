@@ -4,6 +4,7 @@ import '../../../core/utils/price_amount.dart';
 import '../../../data/models/product_model.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/repositories/product_repository.dart';
+import '../../../shared/widgets/raff_ui.dart';
 import 'barcode_scanner_screen.dart';
 
 class ProductFormScreen extends StatefulWidget {
@@ -96,77 +97,79 @@ class _ProductFormScreenState extends State<ProductFormScreen> {
     final isNew = widget.product == null;
     return Scaffold(
       appBar: AppBar(title: Text(isNew ? 'إضافة منتج' : 'تعديل المنتج')),
-      body: Form(
-        key: _formKey,
-        child: ListView(
-          padding: const EdgeInsets.all(20),
-          children: [
-            TextFormField(
-              controller: _name,
-              maxLength: 120,
-              decoration: const InputDecoration(
-                labelText: 'اسم المنتج',
-                border: OutlineInputBorder(),
-              ),
-              validator: (value) => value == null || value.trim().isEmpty
-                  ? 'اسم المنتج مطلوب'
-                  : null,
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _barcode,
-              maxLength: 128,
-              keyboardType: TextInputType.text,
-              decoration: InputDecoration(
-                labelText: 'الباركود',
-                border: const OutlineInputBorder(),
-                suffixIcon: IconButton(
-                  tooltip: 'مسح الباركود',
-                  icon: const Icon(Icons.qr_code_scanner),
-                  onPressed: _scanBarcode,
-                ),
-              ),
-              validator: (value) => value == null || value.trim().isEmpty
-                  ? 'الباركود مطلوب'
-                  : null,
-            ),
-            if (isNew) ...[
-              const SizedBox(height: 12),
+      body: RaffResponsiveContent(
+        child: Form(
+          key: _formKey,
+          child: ListView(
+            padding: const EdgeInsets.all(20),
+            children: [
               TextFormField(
-                controller: _purchase,
-                keyboardType: const TextInputType.numberWithOptions(
-                  decimal: true,
-                ),
+                controller: _name,
+                maxLength: 120,
                 decoration: const InputDecoration(
-                  labelText: 'سعر الشراء (د.أ)',
+                  labelText: 'اسم المنتج',
                   border: OutlineInputBorder(),
                 ),
-                validator: (value) => _validatePrice(value, allowZero: true),
+                validator: (value) => value == null || value.trim().isEmpty
+                    ? 'اسم المنتج مطلوب'
+                    : null,
               ),
               const SizedBox(height: 12),
               TextFormField(
-                controller: _selling,
-                keyboardType: const TextInputType.numberWithOptions(
-                  decimal: true,
+                controller: _barcode,
+                maxLength: 128,
+                keyboardType: TextInputType.text,
+                decoration: InputDecoration(
+                  labelText: 'الباركود',
+                  border: const OutlineInputBorder(),
+                  suffixIcon: IconButton(
+                    tooltip: 'مسح الباركود',
+                    icon: const Icon(Icons.qr_code_scanner),
+                    onPressed: _scanBarcode,
+                  ),
                 ),
-                decoration: const InputDecoration(
-                  labelText: 'سعر البيع (د.أ)',
-                  border: OutlineInputBorder(),
+                validator: (value) => value == null || value.trim().isEmpty
+                    ? 'الباركود مطلوب'
+                    : null,
+              ),
+              if (isNew) ...[
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: _purchase,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  decoration: const InputDecoration(
+                    labelText: 'سعر الشراء (د.أ)',
+                    border: OutlineInputBorder(),
+                  ),
+                  validator: (value) => _validatePrice(value, allowZero: true),
                 ),
-                validator: (value) => _validatePrice(value, allowZero: false),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: _selling,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  decoration: const InputDecoration(
+                    labelText: 'سعر البيع (د.أ)',
+                    border: OutlineInputBorder(),
+                  ),
+                  validator: (value) => _validatePrice(value, allowZero: false),
+                ),
+              ],
+              const SizedBox(height: 24),
+              FilledButton(
+                onPressed: _saving ? null : _save,
+                child: _saving
+                    ? const SizedBox.square(
+                        dimension: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('حفظ'),
               ),
             ],
-            const SizedBox(height: 24),
-            FilledButton(
-              onPressed: _saving ? null : _save,
-              child: _saving
-                  ? const SizedBox.square(
-                      dimension: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Text('حفظ'),
-            ),
-          ],
+          ),
         ),
       ),
     );

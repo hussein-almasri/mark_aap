@@ -5,6 +5,7 @@ import '../../../data/models/price_history_model.dart';
 import '../../../data/models/product_model.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/repositories/product_price_repository.dart';
+import '../../../shared/widgets/raff_ui.dart';
 import 'product_form_screen.dart';
 
 class ProductDetailsScreen extends StatefulWidget {
@@ -132,60 +133,85 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
             ]
           : null,
     ),
-    body: ListView(
-      padding: const EdgeInsets.all(20),
-      children: [
-        Text(
-          widget.product.name,
-          style: Theme.of(context).textTheme.headlineSmall,
-        ),
-        const SizedBox(height: 6),
-        Text('الباركود: ${widget.product.barcode}'),
-        const Divider(height: 32),
-        FutureBuilder(
-          future: _prices.getSellingPrice(
-            storeId: widget.user.storeId,
-            productId: widget.product.id,
-          ),
-          builder: (context, snapshot) => ListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('سعر البيع'),
-            trailing: Text(
-              snapshot.hasData
-                  ? PriceAmount.formatJod(snapshot.data!.sellingPrice)
-                  : '—',
+    body: RaffResponsiveContent(
+      child: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          RaffSummaryPanel(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  widget.product.name,
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'الباركود: ${widget.product.barcode}',
+                  style: TextStyle(color: Colors.white.withValues(alpha: 0.8)),
+                ),
+              ],
             ),
-            onTap: widget.user.isAdmin && !_priceOperationInProgress
-                ? () => _changePrice(selling: true)
-                : null,
           ),
-        ),
-        if (widget.user.isAdmin) ...[
+          const SizedBox(height: 12),
+          const RaffSectionHeading(
+            title: 'الأسعار',
+            subtitle: 'الأسعار المعتمدة لهذا المنتج',
+            icon: Icons.price_change_outlined,
+          ),
+          const SizedBox(height: 6),
           FutureBuilder(
-            future: _prices.getProductCost(
+            future: _prices.getSellingPrice(
               storeId: widget.user.storeId,
               productId: widget.product.id,
             ),
-            builder: (context, snapshot) => ListTile(
-              contentPadding: EdgeInsets.zero,
-              title: const Text('سعر الشراء'),
-              trailing: Text(
-                snapshot.hasData
-                    ? PriceAmount.formatJod(snapshot.data!.purchasePrice)
-                    : '—',
+            builder: (context, snapshot) => Card(
+              child: ListTile(
+                leading: const Icon(Icons.sell_outlined),
+                title: const Text('سعر البيع'),
+                trailing: Text(
+                  snapshot.hasData
+                      ? PriceAmount.formatJod(snapshot.data!.sellingPrice)
+                      : '—',
+                ),
+                onTap: widget.user.isAdmin && !_priceOperationInProgress
+                    ? () => _changePrice(selling: true)
+                    : null,
               ),
-              onTap: _priceOperationInProgress
-                  ? null
-                  : () => _changePrice(selling: false),
             ),
           ),
-          OutlinedButton.icon(
-            onPressed: _showHistory,
-            icon: const Icon(Icons.history),
-            label: const Text('عرض سجل الأسعار'),
-          ),
+          if (widget.user.isAdmin) ...[
+            FutureBuilder(
+              future: _prices.getProductCost(
+                storeId: widget.user.storeId,
+                productId: widget.product.id,
+              ),
+              builder: (context, snapshot) => Card(
+                child: ListTile(
+                  leading: const Icon(Icons.shopping_bag_outlined),
+                  title: const Text('سعر الشراء'),
+                  trailing: Text(
+                    snapshot.hasData
+                        ? PriceAmount.formatJod(snapshot.data!.purchasePrice)
+                        : '—',
+                  ),
+                  onTap: _priceOperationInProgress
+                      ? null
+                      : () => _changePrice(selling: false),
+                ),
+              ),
+            ),
+            OutlinedButton.icon(
+              onPressed: _showHistory,
+              icon: const Icon(Icons.history),
+              label: const Text('عرض سجل الأسعار'),
+            ),
+          ],
         ],
-      ],
+      ),
     ),
   );
 }

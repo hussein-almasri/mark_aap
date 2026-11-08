@@ -8,6 +8,7 @@ import '../../../data/models/supplier_payment_model.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/repositories/purchase_invoice_repository.dart';
 import '../../../data/repositories/supplier_payment_repository.dart';
+import '../../../shared/widgets/raff_ui.dart';
 import '../supplier_payment_error_message.dart';
 import '../supplier_payment_form_validator.dart';
 
@@ -170,8 +171,9 @@ class _SupplierPaymentFormScreenState extends State<SupplierPaymentFormScreen> {
         } catch (_) {
           number = null;
         }
-        result[debt.invoiceId] =
-            (number == null || number.trim().isEmpty) ? null : number.trim();
+        result[debt.invoiceId] = (number == null || number.trim().isEmpty)
+            ? null
+            : number.trim();
       }),
     );
     return result;
@@ -219,10 +221,8 @@ class _SupplierPaymentFormScreenState extends State<SupplierPaymentFormScreen> {
     for (final debt in _debts) debt.remainingAmountFils,
   ];
 
-  int get _allocatedTotal => _allocationFils.fold<int>(
-    0,
-    (sum, value) => sum + (value ?? 0),
-  );
+  int get _allocatedTotal =>
+      _allocationFils.fold<int>(0, (sum, value) => sum + (value ?? 0));
 
   /// The cross-field error for the current input; `null` when valid.
   String? get _paymentError {
@@ -247,7 +247,10 @@ class _SupplierPaymentFormScreenState extends State<SupplierPaymentFormScreen> {
   }
 
   bool get _canSave =>
-      !_isSaving && !_isLoadingDebts && _debtsError == null && _debts.isNotEmpty;
+      !_isSaving &&
+      !_isLoadingDebts &&
+      _debtsError == null &&
+      _debts.isNotEmpty;
 
   Future<void> _save() async {
     if (!_canSave) return;
@@ -264,7 +267,9 @@ class _SupplierPaymentFormScreenState extends State<SupplierPaymentFormScreen> {
     ];
     // Allocations always reference the real internal invoice id, whether or not
     // the supplier printed a number on it.
-    final allocationDebts = [for (final index in selectedIndices) _debts[index]];
+    final allocationDebts = [
+      for (final index in selectedIndices) _debts[index],
+    ];
     final allocationAmounts = [
       for (final index in selectedIndices)
         SupplierPaymentFormValidator.tryParseJodField(
@@ -340,26 +345,30 @@ class _SupplierPaymentFormScreenState extends State<SupplierPaymentFormScreen> {
 
   void _showMessage(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: Text('دفعة إلى ${widget.companyName}')),
-      body: SafeArea(
-        child: _isLoadingDebts
-            ? const Center(child: CircularProgressIndicator())
-            : _debtsError != null
-            ? _buildDebtsFailure()
-            : _debts.isEmpty
-            ? const Center(
-                child: Padding(
-                  padding: EdgeInsets.all(24),
-                  child: Text('لا توجد ديون متبقية لهذا المورد.'),
-                ),
-              )
-            : _buildForm(),
+      body: RaffResponsiveContent(
+        child: SafeArea(
+          child: _isLoadingDebts
+              ? const Center(child: CircularProgressIndicator())
+              : _debtsError != null
+              ? _buildDebtsFailure()
+              : _debts.isEmpty
+              ? const Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(24),
+                    child: Text('لا توجد ديون متبقية لهذا المورد.'),
+                  ),
+                )
+              : _buildForm(),
+        ),
       ),
       bottomNavigationBar: _buildSaveBar(),
     );
@@ -521,7 +530,10 @@ class _SupplierPaymentFormScreenState extends State<SupplierPaymentFormScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _summaryRow('إجمالي مبلغ الدفعة', _formatFils(amount)),
-            _summaryRow('إجمالي المسدّد للفواتير', _formatFils(_allocatedTotal)),
+            _summaryRow(
+              'إجمالي المسدّد للفواتير',
+              _formatFils(_allocatedTotal),
+            ),
             _summaryRow(
               'المتبقي من الدفعة',
               _formatFils(amount == null ? null : amount - _allocatedTotal),

@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../../../data/models/employee_summary.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/repositories/employee_repository.dart';
+import '../../../shared/widgets/raff_ui.dart';
 
 class EmployeeManagementScreen extends StatefulWidget {
   const EmployeeManagementScreen({
@@ -178,7 +179,7 @@ class _EmployeeManagementScreenState extends State<EmployeeManagementScreen> {
           ? const Center(child: CircularProgressIndicator())
           : _employees == null
           ? _buildLoadFailure()
-          : _buildEmployeeList(),
+          : RaffResponsiveContent(child: _buildEmployeeList()),
     );
   }
 
@@ -277,7 +278,9 @@ class _EmployeeManagementScreenState extends State<EmployeeManagementScreen> {
                   alignment: AlignmentDirectional.centerStart,
                   child: Text(
                     error,
-                    style: TextStyle(color: Theme.of(context).colorScheme.error),
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
                   ),
                 ),
               ),

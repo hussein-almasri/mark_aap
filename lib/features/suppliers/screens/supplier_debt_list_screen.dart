@@ -8,6 +8,7 @@ import '../../../data/models/supplier_debt_model.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/repositories/company_repository.dart';
 import '../../../data/repositories/supplier_payment_repository.dart';
+import '../../../shared/widgets/raff_ui.dart';
 import 'supplier_payment_form_screen.dart';
 import 'supplier_payment_log_screen.dart';
 
@@ -154,9 +155,7 @@ class _SupplierDebtListScreenState extends State<SupplierDebtListScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(
-          _selectedCompany?.name ?? 'ديون ودفعات الموردين',
-        ),
+        title: Text(_selectedCompany?.name ?? 'ديون ودفعات الموردين'),
         leading: _selectedCompany == null
             ? null
             : IconButton(
@@ -172,7 +171,7 @@ class _SupplierDebtListScreenState extends State<SupplierDebtListScreen> {
         ],
       ),
       floatingActionButton: _buildPaymentFab(),
-      body: _buildBody(),
+      body: RaffResponsiveContent(child: _buildBody()),
     );
   }
 
@@ -206,12 +205,20 @@ class _SupplierDebtListScreenState extends State<SupplierDebtListScreen> {
     if (companies.isEmpty) {
       return const Center(child: Text('لا توجد شركات نشطة بعد.'));
     }
-    final sorted = [...companies]
-      ..sort((a, b) => a.name.compareTo(b.name));
+    final sorted = [...companies]..sort((a, b) => a.name.compareTo(b.name));
     return ListView.builder(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
-      itemCount: sorted.length,
-      itemBuilder: (context, index) => _buildCompanyCard(sorted[index]),
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+      itemCount: sorted.length + 1,
+      itemBuilder: (context, index) => index == 0
+          ? Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: RaffSectionHeading(
+                title: 'الموردون',
+                subtitle: '${sorted.length} جهة مسجلة',
+                icon: Icons.business_outlined,
+              ),
+            )
+          : _buildCompanyCard(sorted[index - 1]),
     );
   }
 

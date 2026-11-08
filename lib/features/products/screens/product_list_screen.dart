@@ -5,6 +5,7 @@ import '../../../data/models/user_model.dart';
 import '../../../data/repositories/product_price_repository.dart';
 import '../../../data/repositories/product_repository.dart';
 import '../../../core/utils/price_amount.dart';
+import '../../../shared/widgets/raff_ui.dart';
 import 'product_form_screen.dart';
 import 'product_details_screen.dart';
 import 'barcode_scanner_screen.dart';
@@ -67,94 +68,125 @@ class _ProductListScreenState extends State<ProductListScreen> {
               label: const Text('إضافة منتج'),
             )
           : null,
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: TextField(
-              controller: _searchController,
-              textInputAction: TextInputAction.search,
-              onSubmitted: _search,
-              decoration: InputDecoration(
-                hintText: 'ابحث بالاسم أو الباركود',
-                prefixIcon: const Icon(Icons.search),
-                suffixIcon: IconButton(
-                  tooltip: 'مسح الباركود',
-                  icon: const Icon(Icons.qr_code_scanner),
-                  onPressed: () async {
-                    final barcode = await Navigator.of(context).push<String>(
-                      MaterialPageRoute(
-                        builder: (_) => const BarcodeScannerScreen(),
+      body: RaffResponsiveContent(
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+              child: Column(
+                children: [
+                  const RaffSectionHeading(
+                    title: 'المنتجات',
+                    subtitle: 'ابحث بالاسم أو امسح الباركود لعرض التفاصيل',
+                    icon: Icons.inventory_2_outlined,
+                  ),
+                  const SizedBox(height: 14),
+                  TextField(
+                    controller: _searchController,
+                    textInputAction: TextInputAction.search,
+                    onSubmitted: _search,
+                    decoration: InputDecoration(
+                      hintText: 'ابحث بالاسم أو الباركود',
+                      prefixIcon: const Icon(Icons.search),
+                      suffixIcon: IconButton(
+                        tooltip: 'مسح الباركود',
+                        icon: const Icon(Icons.qr_code_scanner),
+                        onPressed: () async {
+                          final barcode = await Navigator.of(context)
+                              .push<String>(
+                                MaterialPageRoute(
+                                  builder: (_) => const BarcodeScannerScreen(),
+                                ),
+                              );
+                          if (barcode != null && mounted) {
+                            _searchController.text = barcode;
+                            _search(barcode);
+                          }
+                        },
                       ),
-                    );
-                    if (barcode != null && mounted) {
-                      _searchController.text = barcode;
-                      _search(barcode);
-                    }
-                  },
-                ),
-                border: const OutlineInputBorder(),
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                ],
               ),
             ),
-          ),
-          Expanded(
-            child: FutureBuilder<List<ProductModel>>(
-              future: _result,
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-                if (snapshot.hasError) {
-                  return _Message(
-                    text: 'تعذر تحميل المنتجات: ${snapshot.error}',
-                  );
-                }
-                final items = snapshot.data ?? const <ProductModel>[];
-                if (items.isEmpty) {
-                  return const _Message(text: 'لا توجد منتجات');
-                }
-                return RefreshIndicator(
-                  onRefresh: () async => _search(_query),
-                  child: ListView.builder(
-                    padding: const EdgeInsets.only(bottom: 88),
-                    itemCount: items.length,
-                    itemBuilder: (context, index) {
-                      final product = items[index];
-                      return ListTile(
-                        title: Text(product.name),
-                        subtitle: Text('الباركود: ${product.barcode}'),
-                        trailing: FutureBuilder(
-                          future: _prices.getSellingPrice(
-                            storeId: widget.user.storeId,
-                            productId: product.id,
-                          ),
-                          builder: (context, priceSnapshot) => Text(
-                            priceSnapshot.hasData
-                                ? PriceAmount.formatJod(
-                                    priceSnapshot.data!.sellingPrice,
-                                  )
-                                : '—',
-                          ),
-                        ),
-                        onTap: () => Navigator.of(context).push<void>(
-                          MaterialPageRoute(
-                            builder: (_) => ProductDetailsScreen(
-                              user: widget.user,
-                              product: product,
+            Expanded(
+              child: FutureBuilder<List<ProductModel>>(
+                future: _result,
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  if (snapshot.hasError) {
+                    return _Message(
+                      text: 'تعذر تحميل المنتجات: ${snapshot.error}',
+                    );
+                  }
+                  final items = snapshot.data ?? const <ProductModel>[];
+                  if (items.isEmpty) {
+                    return const _Message(text: 'لا توجد منتجات');
+                  }
+                  return RefreshIndicator(
+                    onRefresh: () async => _search(_query),
+                    child: ListView.builder(
+                      padding: const EdgeInsets.only(bottom: 88),
+                      itemCount: items.length,
+                      itemBuilder: (context, index) {
+                        final product = items[index];
+                        return Card(
+                          margin: const EdgeInsets.fromLTRB(16, 5, 16, 5),
+                          child: ListTile(
+                            leading: Container(
+                              width: 42,
+                              height: 42,
+                              alignment: Alignment.center,
+                              decoration: BoxDecoration(
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.secondaryContainer,
+                                borderRadius: BorderRadius.circular(13),
+                              ),
+                              child: Icon(
+                                Icons.inventory_2_outlined,
+                                color: Theme.of(context).colorScheme.primary,
+                              ),
                             ),
+                            title: Text(product.name),
+                            subtitle: Text('الباركود: ${product.barcode}'),
+                            trailing: FutureBuilder(
+                              future: _prices.getSellingPrice(
+                                storeId: widget.user.storeId,
+                                productId: product.id,
+                              ),
+                              builder: (context, priceSnapshot) => Text(
+                                priceSnapshot.hasData
+                                    ? PriceAmount.formatJod(
+                                        priceSnapshot.data!.sellingPrice,
+                                      )
+                                    : '—',
+                              ),
+                            ),
+                            onTap: () => Navigator.of(context).push<void>(
+                              MaterialPageRoute(
+                                builder: (_) => ProductDetailsScreen(
+                                  user: widget.user,
+                                  product: product,
+                                ),
+                              ),
+                            ),
+                            onLongPress: widget.user.isAdmin
+                                ? () => _openForm(product)
+                                : null,
                           ),
-                        ),
-                        onLongPress: widget.user.isAdmin
-                            ? () => _openForm(product)
-                            : null,
-                      );
-                    },
-                  ),
-                );
-              },
+                        );
+                      },
+                    ),
+                  );
+                },
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

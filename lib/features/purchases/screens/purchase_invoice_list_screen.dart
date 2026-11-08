@@ -6,6 +6,7 @@ import '../../../core/utils/price_amount.dart';
 import '../../../data/models/purchase_invoice_model.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/repositories/purchase_invoice_repository.dart';
+import '../../../shared/widgets/raff_ui.dart';
 import 'purchase_invoice_details_screen.dart';
 import 'purchase_invoice_form_screen.dart';
 
@@ -110,7 +111,7 @@ class _PurchaseInvoiceListScreenState extends State<PurchaseInvoiceListScreen> {
           ? const Center(child: CircularProgressIndicator())
           : _loadError != null
           ? _buildLoadFailure()
-          : _buildInvoiceList(),
+          : RaffResponsiveContent(child: _buildInvoiceList()),
     );
   }
 
@@ -138,10 +139,34 @@ class _PurchaseInvoiceListScreenState extends State<PurchaseInvoiceListScreen> {
     }
     final sorted = [...invoices]
       ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-    return ListView.builder(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
-      itemCount: sorted.length,
-      itemBuilder: (context, index) => _buildInvoiceCard(sorted[index]),
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
+      children: [
+        const RaffSectionHeading(
+          title: 'فواتير المشتريات',
+          subtitle: 'عرض الفواتير المسجلة وتفاصيلها',
+          icon: Icons.receipt_long_outlined,
+        ),
+        const SizedBox(height: 12),
+        RaffSummaryPanel(
+          child: Row(
+            children: [
+              const Icon(Icons.receipt_long_outlined),
+              const SizedBox(width: 10),
+              const Expanded(child: Text('إجمالي الفواتير المسجلة')),
+              Text(
+                '${sorted.length}',
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        ...sorted.map(_buildInvoiceCard),
+      ],
     );
   }
 

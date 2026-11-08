@@ -8,6 +8,7 @@ import '../../../data/models/customer_transaction_model.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/repositories/customer_repository.dart';
 import '../../../data/repositories/customer_transaction_repository.dart';
+import '../../../shared/widgets/raff_ui.dart';
 
 class CustomerDetailsScreen extends StatefulWidget {
   const CustomerDetailsScreen({
@@ -20,13 +21,11 @@ class CustomerDetailsScreen extends StatefulWidget {
   final String customerId;
 
   @override
-  State<CustomerDetailsScreen> createState() =>
-      _CustomerDetailsScreenState();
+  State<CustomerDetailsScreen> createState() => _CustomerDetailsScreenState();
 }
 
 class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
-  late final CustomerRepository _customerRepo =
-      CustomerRepository();
+  late final CustomerRepository _customerRepo = CustomerRepository();
   late final CustomerTransactionRepository _txRepo =
       CustomerTransactionRepository();
 
@@ -45,8 +44,10 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
 
   Future<void> _loadCustomer() async {
     try {
-      final customer =
-          await _customerRepo.getCustomer(widget.user.storeId, widget.customerId);
+      final customer = await _customerRepo.getCustomer(
+        widget.user.storeId,
+        widget.customerId,
+      );
       setState(() => _customer = customer);
     } catch (e) {
       if (!mounted) return;
@@ -112,9 +113,9 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
 
   void _showMessage(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   bool _canAddDebt() {
@@ -196,9 +197,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
     final result = await showDialog<({int amount, String? note})>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: Text(
-          type == 'debt' ? 'إضافة دين' : 'إضافة مدفوعة',
-        ),
+        title: Text(type == 'debt' ? 'إضافة دين' : 'إضافة مدفوعة'),
         content: Form(
           key: formKey,
           child: SingleChildScrollView(
@@ -207,8 +206,9 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
               children: [
                 TextFormField(
                   controller: amountController,
-                  keyboardType:
-                      const TextInputType.numberWithOptions(decimal: true),
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
                   decoration: const InputDecoration(
                     labelText: 'المبلغ (د.أ)',
                     hintText: 'مثال: 1.50',
@@ -314,110 +314,102 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
         body: _isLoading
             ? const Center(child: CircularProgressIndicator())
             : _loadError != null
-                ? Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Text(_loadError!),
-                        const SizedBox(height: 16),
-                        FilledButton(
-                          onPressed: _loadCustomer,
-                          child: const Text('إعادة المحاولة'),
-                        ),
-                      ],
+            ? Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(_loadError!),
+                    const SizedBox(height: 16),
+                    FilledButton(
+                      onPressed: _loadCustomer,
+                      child: const Text('إعادة المحاولة'),
                     ),
-                  )
-                : const Center(child: Text('لا توجد بيانات للعميل'))
+                  ],
+                ),
+              )
+            : const Center(child: Text('لا توجد بيانات للعميل')),
       );
     }
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text('${_customer?.name ?? ''} - تفاصيل'),
-      ),
+      appBar: AppBar(title: Text('${_customer?.name ?? ''} - تفاصيل')),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : _loadError != null
-              ? _buildLoadError()
-              : SingleChildScrollView(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // Customer info header
-                      Card(
-                        child: Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                _customer?.name ?? '',
-                                style: const TextStyle(
-                                  fontSize: 24,
-                                  fontWeight: FontWeight.bold,
+          ? _buildLoadError()
+          : RaffResponsiveContent(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              _customer?.name ?? '',
+                              style: const TextStyle(
+                                fontSize: 24,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                const Icon(Icons.phone),
+                                const SizedBox(width: 4),
+                                Text(_customer?.phone ?? 'لا يوجد رقم'),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                const Icon(Icons.money),
+                                const SizedBox(width: 4),
+                                Text(
+                                  _balance != null
+                                      ? 'الرصيد: ${PriceAmount.formatJod2(_balance!)}'
+                                      : 'جاري حساب الرصيد...',
                                 ),
-                              ),
-                              const SizedBox(height: 8),
-                              Row(
-                                children: [
-                                  const Icon(Icons.phone),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    _customer?.phone ?? 'لا يوجد رقم',
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 8),
-                              Row(
-                                children: [
-                                  const Icon(Icons.money),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    _balance != null
-                                        ? 'الرصيد: ${PriceAmount.formatJod2(_balance!)}'
-                                        : 'جاري حساب الرصيد...',
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 8),
-                              Row(
-                                children: [
-                                  const Icon(Icons.toggle_on),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    _customer?.debtEnabled == true
-                                        ? 'دين مفعل'
-                                        : 'دين معطل',
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                const Icon(Icons.toggle_on),
+                                const SizedBox(width: 4),
+                                Text(
+                                  _customer?.debtEnabled == true
+                                      ? 'دين مفعل'
+                                      : 'دين معطل',
+                                ),
+                              ],
+                            ),
+                          ],
                         ),
                       ),
-                      const SizedBox(height: 16),
-
-                      // Transaction history
-                      const Text(
-                        'تاريخ المعاملات',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'تاريخ المعاملات',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
                       ),
-                      const SizedBox(height: 8),
-
-                      _transactions == null || _transactions!.isEmpty
-                          ? const Text('لا توجد معاملات')
-                          : _buildTransactionList(),
-                      const SizedBox(height: 16),
-
-                      // Action buttons
-                      _buildActionButtons(isAdmin),
-                    ],
-                  ),
+                    ),
+                    const SizedBox(height: 8),
+                    _transactions == null || _transactions!.isEmpty
+                        ? const Text('لا توجد معاملات')
+                        : _buildTransactionList(),
+                    const SizedBox(height: 16),
+                    _buildActionButtons(isAdmin),
+                  ],
                 ),
+              ),
+            ),
     );
   }
 
@@ -427,7 +419,10 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
       children: [
         Text(_loadError!),
         const SizedBox(height: 16),
-        FilledButton(onPressed: _loadTransactions, child: const Text('إعادة المحاولة')),
+        FilledButton(
+          onPressed: _loadTransactions,
+          child: const Text('إعادة المحاولة'),
+        ),
       ],
     ),
   );
@@ -444,7 +439,8 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
   }
 
   Widget _buildTransactionCard(CustomerTransactionModel tx) {
-    final isCancelled = tx.status.value == CustomerTransactionStatus.cancelled.value;
+    final isCancelled =
+        tx.status.value == CustomerTransactionStatus.cancelled.value;
     final typeLabel = tx.type.value == 'DEBT' ? 'دين' : 'مدفوعة';
     final statusText = isCancelled ? 'ملغاة' : 'نشطة';
     final note = tx.note;
@@ -459,8 +455,8 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
               isCancelled
                   ? Icons.cancel_outlined
                   : tx.type.value == 'DEBT'
-                      ? Icons.add_chart
-                      : Icons.remove_circle_outline,
+                  ? Icons.add_chart
+                  : Icons.remove_circle_outline,
             ),
             const SizedBox(width: 8),
             Expanded(
@@ -473,10 +469,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen> {
                   ),
                   Text(
                     '$statusText • ${_formatDate(tx.createdAt)}',
-                    style: TextStyle(
-                      color: Colors.grey[600],
-                      fontSize: 12,
-                    ),
+                    style: TextStyle(color: Colors.grey[600], fontSize: 12),
                   ),
                   // Only render a note line when one was actually saved;
                   // never show placeholder text for an empty note.

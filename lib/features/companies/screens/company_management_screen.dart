@@ -3,9 +3,14 @@ import 'package:flutter/material.dart';
 import '../../../data/models/company_model.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/repositories/company_repository.dart';
+import '../../../shared/widgets/raff_ui.dart';
 
 class CompanyManagementScreen extends StatefulWidget {
-  const CompanyManagementScreen({required this.user, this.repository, super.key});
+  const CompanyManagementScreen({
+    required this.user,
+    this.repository,
+    super.key,
+  });
 
   final UserModel user;
   final CompanyRepository? repository;
@@ -147,9 +152,9 @@ class _CompanyManagementScreenState extends State<CompanyManagementScreen> {
 
   void _showMessage(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
@@ -174,7 +179,7 @@ class _CompanyManagementScreenState extends State<CompanyManagementScreen> {
           ? const Center(child: CircularProgressIndicator())
           : _loadError != null
           ? _buildLoadFailure()
-          : _buildCompanyList(),
+          : RaffResponsiveContent(child: _buildCompanyList()),
     );
   }
 
@@ -201,8 +206,17 @@ class _CompanyManagementScreenState extends State<CompanyManagementScreen> {
         ? const Center(child: Text('لا توجد شركات مسجلة بعد.'))
         : ListView.builder(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
-            itemCount: companies.length,
-            itemBuilder: (context, index) => _buildCompanyCard(companies[index]),
+            itemCount: companies.length + 1,
+            itemBuilder: (context, index) => index == 0
+                ? Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: RaffSectionHeading(
+                      title: 'الشركات',
+                      subtitle: '${companies.length} جهة مسجلة',
+                      icon: Icons.business_outlined,
+                    ),
+                  )
+                : _buildCompanyCard(companies[index - 1]),
           );
   }
 
